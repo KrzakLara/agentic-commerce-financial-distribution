@@ -1,11 +1,12 @@
 # API contracts (from ADR-001 v1.1, section 05)
 
 All routes are versioned and validated; agent-facing routes expose generic, least-privilege
-status. **Implemented (Phase 02 + Phase 03 authorization):** `GET /health`,
+status. **Implemented (Phase 02 + Phase 03 authorization + Phase 04):** `GET /health`,
 `GET /v1/providers/{id}/manifest`, `GET /v1/products`, `POST /v1/applications`,
 `GET /v1/applications/{id}`, `POST /v1/applications/{id}/handoff`,
-`POST /v1/customer/handoffs/{id}/confirm`, `POST /v1/applications/{id}/submit`, plus the
-non-public provider callback and HTML pages. See [onboarding-flow.md](onboarding-flow.md) for the
+`POST /v1/customer/handoffs/{id}/confirm`, `POST /v1/applications/{id}/submit`,
+`POST /v1/customer/applications/{id}/request-human` (Phase 04), plus the non-public provider
+callback and HTML pages. Operators have **no** HTTP route (trusted dev console only). See [onboarding-flow.md](onboarding-flow.md) for the
 whole sequence and [authorization.md](authorization.md) for the token model.
 
 Agent authorization is a **controlled development implementation** (opaque, scoped,
@@ -23,7 +24,8 @@ bank-approved authorization server and API security controls.
 | `POST /v1/applications/{id}/submit` | agent | onboarding token of `{id}`, `submit_after_consent` | Only after server-verified consent, KYC/compliance, contract prerequisites |
 | `POST /v1/customer/handoffs/{id}/confirm` | customer (DEV sim.) | `X-Dev-Customer-Id`; an `Authorization` header is refused | Bank-controlled ceremony binding customer, application, exact action |
 | `POST /internal/depot-provider/confirmations` | trusted provider (MOCK) | HMAC signature (no bearer token) | Replay/duplicate/transition checks; the only path to `OPENED` (hidden, disabled by default) |
-| `POST /v1/customer/applications/{id}/request-human`, `GET /v1/customer/cases/{id}` | customer | - | **Not implemented** - listed in plan v2 phase 3 but not part of the Phase 03 brief; deferred |
+| `POST /v1/customer/applications/{id}/request-human` | customer (simulated sign-in) | the customer's **server-side session** (HttpOnly cookie `trusteq_customer_api`, path `/v1/customer`) **and** its CSRF token for this application in `X-CSRF-Token`; `X-Dev-Customer-Id` is NOT accepted; any `Authorization` header is refused (401, audited); cross-site browser requests 403 | Body `{"category": ...}` from a fixed list (no free text). Opens - or joins - the application's single active review case and pauses the workflow at its current step where possible. `202` with the same generic acknowledgement in every case; `401` no/expired/revoked session; `403` missing or foreign CSRF token; `404` another customer's or an unknown application. The page button posts the same request to `POST /customer/applications/{id}/request-human` (not part of the OpenAPI contract) |
+| `GET /v1/customer/cases/{id}` | - | - | **Not implemented (deliberately)**: a case status could reveal a compliance review (tipping-off). See [phase-04-traceability.md](phase-04-traceability.md) |
 
 There is no endpoint that issues, exchanges, refreshes or widens tokens. The first (bootstrap)
 token comes from the trusted operator CLI `python -m scripts.dev_auth bootstrap`.
@@ -165,3 +167,38 @@ or wrong state, `422` malformed, `200 {"result":"accepted"|"duplicate_ignored"}`
 CONTRACT_PENDING -> SUBMITTED_TO_DEPOT_PROVIDER -> OPENED`; side outcomes `ACTION_REQUIRED`,
 `MANUAL_REVIEW`, `REJECTED`, `CANCELLED`, `FAILED`. Only a trusted depot-provider confirmation
 sets `OPENED`.
+
+## Phase 04 additions
+
+* **Manifest** (`GET /v1/providers/{id}/manifest`) additionally returns `registry_reference`
+  (fictional LEI - informational only), `verified_domain`, `api_endpoint`, `capabilities`,
+  `issued_at`, `expires_at`, `signature_algorithm`, `trust_anchor` and `verification_checks`.
+  Only ACTIVE channels are listed; each has `kind` (`DIRECT` / `PARTNER_BANK`), `partner_id` and
+  `partner_name` (from the bank's partner register). A manifest outside its validity window
+  answers `503 catalog_unavailable`; `verification` stays `LOCAL_FIXTURE_DIGEST_PINNED`
+  (honest: a local fixture, not a registry lookup).
+* **Products** (`GET /v1/products`) additionally return `fees`, `conditions`, `risk_class`,
+  `risk_summary`, `sources` (document id, version, digest), `effective_from`, `published_at`,
+  `terms_digest` and a fixed `notice` ("not investment advice, not a suitability assessment").
+  `channel_ids` lists only active channels that serve the product.
+* **Handoff action** additionally contains `terms_digest` and `partner_id` (from the registry):
+  the customer approves exactly these terms and this attribution.
+* **Confirmation** is refused (`409 action_digest_mismatch`, audited reason
+  `action_no_longer_current`) if terms, disclosure, channel/partner or manifest validity changed
+  since the handoff.
+* **Submit** is refused (`409 prerequisites_not_met`, audited `approved_action_current`) if the
+  live catalog no longer offers exactly the action the customer approved. Approvals from before
+  Phase 04 are compared on the fields they covered.
+* **Create** rejects inactive (ended partnership), unknown and fabricated channels, channels that
+  do not serve the product and expired providers with `422 unverified_reference`; unknown body
+  fields such as `partner_id` or `commission_recipient` with `422 validation_error`.
+* **request-human** needs the customer's session and CSRF token (see
+  [onboarding-flow.md](onboarding-flow.md#asking-for-a-person-the-mit-einer-person-sprechen-button)).
+  Example: `POST /v1/customer/applications/app-.../request-human` with the session cookie and
+  `X-CSRF-Token: <token from the bank page>`, body `{"category": "QUESTION_ABOUT_PRODUCT"}`.
+  Response (always the same shape):
+
+  ```json
+  {"application_id": "app-...", "status": "RECEIVED",
+   "message": "Your request to speak with a person has been recorded. ..."}
+  ```

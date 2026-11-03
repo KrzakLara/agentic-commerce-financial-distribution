@@ -40,6 +40,7 @@ class ProviderRole(StrEnum):
     FUND_PROVIDER = "FUND_PROVIDER"
     DISTRIBUTOR = "DISTRIBUTOR"
     DEPOT_PROVIDER = "DEPOT_PROVIDER"
+    PARTNER_BANK = "PARTNER_BANK"  # distributes the depot (Hausbank); the commission recipient
 
 
 class MandateScope(StrEnum):
@@ -87,14 +88,49 @@ class AuditOutcome(StrEnum):
 
 
 class ReviewCaseStatus(StrEnum):
-    OPEN = "OPEN"
-    IN_REVIEW = "IN_REVIEW"
-    CLOSED = "CLOSED"
+    OPEN = "OPEN"  # waiting for an operator
+    AWAITING_INFORMATION = "AWAITING_INFORMATION"  # operator asked for more evidence
+    IN_REVIEW = "IN_REVIEW"  # evidence recorded, ready for a decision
+    CLOSED = "CLOSED"  # resolved (see ReviewDecision); a closed case never reopens
 
 
 class ReviewCaseReason(StrEnum):
     COMPLIANCE_REVIEW_REQUIRED = "COMPLIANCE_REVIEW_REQUIRED"
+    KYC_REVIEW_REQUIRED = "KYC_REVIEW_REQUIRED"
+    CHECK_FAILED = "CHECK_FAILED"  # a mandatory check returned FAIL: a human decides, not code
     CUSTOMER_REQUESTED_HUMAN = "CUSTOMER_REQUESTED_HUMAN"
+
+
+class HumanRequestCategory(StrEnum):
+    """Why a customer asks for a person. A fixed list: no free text, no personal data."""
+
+    QUESTION_ABOUT_PRODUCT = "QUESTION_ABOUT_PRODUCT"
+    HELP_WITH_PROCESS = "HELP_WITH_PROCESS"
+    DISAGREE_WITH_AUTOMATED_RESULT = "DISAGREE_WITH_AUTOMATED_RESULT"
+    OTHER = "OTHER"
+
+
+class ReviewEvidenceCategory(StrEnum):
+    """Permitted kinds of review evidence (synthetic references only in the prototype)."""
+
+    SOURCE_OF_FUNDS_CONFIRMATION = "SOURCE_OF_FUNDS_CONFIRMATION"
+    IDENTITY_REVERIFICATION = "IDENTITY_REVERIFICATION"
+    ADDRESS_CONFIRMATION = "ADDRESS_CONFIRMATION"
+    CUSTOMER_CLARIFICATION = "CUSTOMER_CLARIFICATION"
+
+
+class ReviewDecision(StrEnum):
+    """What an operator may decide. Deliberately NO 'approve', 'pass' or 'open'."""
+
+    RE_EVALUATE = "RE_EVALUATE"  # re-run the interrupted check with the recorded evidence
+    RESUME = "RESUME"  # continue a customer-requested pause at the interrupted step
+    REJECT = "REJECT"  # business decision REJECTED (supervisor only)
+    ACKNOWLEDGE = "ACKNOWLEDGE"  # close a case that did not pause the workflow
+
+
+class OperatorRole(StrEnum):
+    REVIEWER = "REVIEWER"
+    SUPERVISOR = "SUPERVISOR"  # may additionally REJECT
 
 
 class CheckOutcome(StrEnum):

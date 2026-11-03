@@ -10,6 +10,7 @@ from types import TracebackType
 from typing import Protocol, Self
 
 from app.domain.application import DepotApplication
+from app.domain.attribution import ChannelAttribution
 from app.domain.audit import AuditEvent
 from app.domain.checks import CheckRecord, DepotSubmissionRecord
 from app.domain.customer_session import CustomerSession
@@ -18,6 +19,7 @@ from app.domain.handoff import Handoff
 from app.domain.idempotency import IdempotencyRecord
 from app.domain.mandate import AgentAccessToken, Mandate
 from app.domain.receipts import ConsentReceipt, DisclosureReceipt
+from app.domain.review import ManualReviewCase
 
 
 class ApplicationRepository(Protocol):
@@ -143,10 +145,38 @@ class ReceiptRepository(Protocol):
 
 class CheckRepository(Protocol):
     def add(self, record: CheckRecord) -> None:
-        """Insert. Raises `IntegrityError` if this check already has a result."""
+        """Insert. Raises `IntegrityError` if this attempt of the check already exists."""
         ...
 
-    def get(self, application_id: str, check_type: CheckType) -> CheckRecord | None: ...
+    def get(self, application_id: str, check_type: CheckType) -> CheckRecord | None:
+        """The latest attempt."""
+        ...
+
+    def list_for_application(self, application_id: str) -> list[CheckRecord]: ...
+
+
+class ReviewCaseRepository(Protocol):
+    def add(self, case: ManualReviewCase) -> None:
+        """Insert. Raises `IntegrityError` if the application already has an active case."""
+        ...
+
+    def get(self, case_id: str) -> ManualReviewCase | None: ...
+
+    def get_active_for_application(self, application_id: str) -> ManualReviewCase | None: ...
+
+    def list_active(self) -> list[ManualReviewCase]: ...
+
+    def list_for_application(self, application_id: str) -> list[ManualReviewCase]: ...
+
+    def update(self, case: ManualReviewCase, *, expected_version: int, at: datetime) -> bool:
+        """Compare-and-set of the mutable fields. False if the case changed meanwhile."""
+        ...
+
+
+class ChannelAttributionRepository(Protocol):
+    def add(self, attribution: ChannelAttribution) -> None: ...
+
+    def get(self, application_id: str) -> ChannelAttribution | None: ...
 
 
 class DepotSubmissionRepository(Protocol):
@@ -171,6 +201,8 @@ class UnitOfWork(Protocol):
     handoffs: HandoffRepository
     receipts: ReceiptRepository
     checks: CheckRepository
+    review_cases: ReviewCaseRepository
+    attributions: ChannelAttributionRepository
     depot_submissions: DepotSubmissionRepository
 
     def __enter__(self) -> Self: ...

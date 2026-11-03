@@ -14,6 +14,10 @@ Integrity is enforced in the database itself as well as in code:
   application; their claims are immutable and a bootstrap's application binding is set once.
   Agent access tokens and customer sessions are stored as SHA-256 hashes only, with
   immutable claims and final revocation.
+* Phase 04: check results are numbered attempts (a human-triggered re-evaluation appends a new
+  attempt, never edits an old one); at most one ACTIVE review case per application and a
+  closed case never reopens; the channel attribution is append-only; an application's
+  provider, product, channel, customer and owner can never change after creation.
 """
 
 from datetime import UTC, datetime
@@ -36,7 +40,15 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
-from app.domain.enums import ApplicationStatus, CheckOutcome, CheckType, MandateKind
+from app.domain.catalog import ChannelKind
+from app.domain.enums import (
+    ApplicationStatus,
+    CheckOutcome,
+    CheckType,
+    MandateKind,
+    ReviewCaseReason,
+    ReviewCaseStatus,
+)
 from app.domain.workflow import RESUMABLE_STATES, TERMINAL_STATES
 from app.repositories.database import Base
 
@@ -68,6 +80,18 @@ _TERMINAL = _sql_list(TERMINAL_STATES)
 _CHECK_TYPES = _sql_list(CheckType)
 _CHECK_OUTCOMES = _sql_list(CheckOutcome)
 _MANDATE_KINDS = _sql_list(MandateKind)
+_CASE_STATUSES = _sql_list(ReviewCaseStatus)
+_CASE_REASONS = _sql_list(ReviewCaseReason)
+_CHANNEL_KINDS = _sql_list(ChannelKind)
+
+# Created by the ORM for new databases AND by the schema upgrade for existing ones.
+APPLICATION_IDENTITY_TRIGGER = """
+    CREATE TRIGGER IF NOT EXISTS trg_applications_identity_is_final
+    BEFORE UPDATE OF application_id, provider_id, product_id, channel_id, customer_ref,
+                     agent_actor_id, created_at ON applications
+    BEGIN SELECT RAISE(ABORT, 'provider, product, channel and parties of an application are final');
+    END
+    """
 
 
 class ApplicationRow(Base):
@@ -274,10 +298,19 @@ class DisclosureReceiptRow(Base):
     document_version: Mapped[str] = mapped_column(String(200))
     document_digest: Mapped[str] = mapped_column(String(64))
     acknowledged_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    # Phase 04 binding (NULL on receipts written before Phase 04).
+    provider_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    product_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    product_version: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    terms_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class CheckResultRow(Base):
-    """Internal evidence that a mandatory check ran. Never exposed to the agent."""
+    """Internal evidence that a mandatory check ran. Never exposed to the agent.
+
+    One row per ATTEMPT: a re-evaluation after human review appends attempt n+1.
+    """
 
     __tablename__ = "check_results"
 
@@ -290,11 +323,84 @@ class CheckResultRow(Base):
     reference: Mapped[str] = mapped_column(String(200))
     mock: Mapped[bool] = mapped_column()
     created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
 
     __table_args__ = (
-        UniqueConstraint("application_id", "check_type", name="uq_check_results_application_type"),
+        UniqueConstraint(
+            "application_id", "check_type", "attempt", name="uq_check_results_attempt"
+        ),
         CheckConstraint(f"check_type IN ({_CHECK_TYPES})", name="ck_check_results_type"),
         CheckConstraint(f"outcome IN ({_CHECK_OUTCOMES})", name="ck_check_results_outcome"),
+        CheckConstraint("attempt >= 1", name="ck_check_results_attempt"),
+    )
+
+
+class ReviewCaseRow(Base):
+    """Human-review case (Phase 04). Internal: never returned to the agent."""
+
+    __tablename__ = "review_cases"
+
+    case_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    application_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("applications.application_id", ondelete="RESTRICT"), index=True
+    )
+    reason: Mapped[str] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(30))
+    check_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    check_attempt: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    request_category: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    interrupted_step: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    opened_by: Mapped[str] = mapped_column(String(20))
+    requested_information: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    resolution: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+    __table_args__ = (
+        # Database-level guarantee: never two active review cases for one application.
+        Index(
+            "uq_review_cases_one_active_per_application",
+            "application_id",
+            unique=True,
+            sqlite_where=text("status != 'CLOSED'"),
+        ),
+        CheckConstraint(f"status IN ({_CASE_STATUSES})", name="ck_review_cases_status"),
+        CheckConstraint(f"reason IN ({_CASE_REASONS})", name="ck_review_cases_reason"),
+        CheckConstraint(
+            "(status = 'CLOSED') = (resolution IS NOT NULL)", name="ck_review_cases_resolution"
+        ),
+        CheckConstraint("version >= 1", name="ck_review_cases_version"),
+    )
+
+
+class ChannelAttributionRow(Base):
+    """Verified distribution attribution, recorded with the customer's consent (append-only)."""
+
+    __tablename__ = "channel_attributions"
+
+    application_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("applications.application_id", ondelete="RESTRICT"), primary_key=True
+    )
+    provider_id: Mapped[str] = mapped_column(String(64))
+    channel_id: Mapped[str] = mapped_column(String(64))
+    channel_kind: Mapped[str] = mapped_column(String(20))
+    partner_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    registry_version: Mapped[str] = mapped_column(String(64))
+    consent_receipt_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("consent_receipts.receipt_id", ondelete="RESTRICT"), unique=True
+    )
+    recorded_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+    __table_args__ = (
+        CheckConstraint(f"channel_kind IN ({_CHANNEL_KINDS})", name="ck_attributions_kind"),
+        CheckConstraint(
+            "(channel_kind = 'PARTNER_BANK') = (partner_id IS NOT NULL)",
+            name="ck_attributions_partner",
+        ),
     )
 
 
@@ -341,6 +447,7 @@ _trigger(
     BEGIN SELECT RAISE(ABORT, 'terminal states cannot change'); END
     """,
 )
+_trigger(ApplicationRow.__table__, APPLICATION_IDENTITY_TRIGGER)
 _trigger(
     AuditEventRow.__table__,
     """
@@ -363,6 +470,7 @@ for _table, _name in (
     (ConsentReceiptRow.__table__, "consent_receipts"),
     (DisclosureReceiptRow.__table__, "disclosure_receipts"),
     (CheckResultRow.__table__, "check_results"),
+    (ChannelAttributionRow.__table__, "channel_attributions"),
 ):
     for _op in ("UPDATE", "DELETE"):
         _trigger(
@@ -435,6 +543,32 @@ for _table, _name, _label, _claims in (
         BEGIN SELECT RAISE(ABORT, '{_label} claims are immutable'); END
         """,
     )
+_trigger(
+    ReviewCaseRow.__table__,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_review_cases_closed_is_final
+    BEFORE UPDATE ON review_cases
+    WHEN OLD.status = 'CLOSED'
+    BEGIN SELECT RAISE(ABORT, 'a closed review case never changes'); END
+    """,
+)
+_trigger(
+    ReviewCaseRow.__table__,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_review_cases_facts_are_immutable
+    BEFORE UPDATE OF case_id, application_id, reason, check_type, check_attempt,
+                     request_category, interrupted_step, opened_by, created_at ON review_cases
+    BEGIN SELECT RAISE(ABORT, 'why and where a review case was opened is immutable'); END
+    """,
+)
+_trigger(
+    ReviewCaseRow.__table__,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_review_cases_no_delete
+    BEFORE DELETE ON review_cases
+    BEGIN SELECT RAISE(ABORT, 'review cases are never deleted'); END
+    """,
+)
 _trigger(
     DepotSubmissionRow.__table__,
     """

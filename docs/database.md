@@ -1,4 +1,4 @@
-# Database (Phase 01 + Phase 02 + Phase 03)
+# Database (Phase 01 - Phase 04)
 
 SQLite via SQLAlchemy 2.x. Default URL `sqlite:///./trusteq.db` (git-ignored). The schema is
 created at application startup (`init_database`) and stamped with `PRAGMA user_version`
@@ -198,3 +198,23 @@ There is no migration tool. `SCHEMA_VERSION` + `PRAGMA user_version` mark the sc
 only added tables, version 3 contains one hand-written, resumable rebuild step (above). A
 production deployment would move to Alembic (or numbered, reviewed SQL steps) and a real database
 with online migrations.
+
+## Phase 04: review cases, check attempts, attribution, disclosure binding (schema version 4)
+
+| Table / change | Purpose and guarantees |
+|---|---|
+| `check_results` (rebuilt) | one row per **attempt** (`attempt >= 1`, UNIQUE (application, check, attempt)); still append-only; the latest attempt decides |
+| `review_cases` (new) | reason, interrupted step, check type + attempt, customer request category, requested information, evidence (category + synthetic reference), resolution; **partial unique index: at most one active (not CLOSED) case per application**; CLOSED <=> resolution; triggers: a closed case never changes, the facts (why/where opened) are immutable, never deleted |
+| `channel_attributions` (new) | the verified attribution recorded with the consent: provider, channel, kind, partner (only for `PARTNER_BANK`), registry version (manifest digest), consent receipt (FK, unique); append-only; one per application |
+| `disclosure_receipts` (+5 nullable columns) | `provider_id`, `product_id`, `product_version`, `terms_digest`, `action_digest`; NULL on receipts written before Phase 04 |
+| `applications` (new trigger) | `trg_applications_identity_is_final`: provider, product, channel, customer and owner can never change after creation |
+
+### Upgrade 3 -> 4 (`init_database`)
+
+Same resumable pattern as 2 -> 3: `check_results` is set aside (`_check_results_v3`, old triggers
+dropped), `create_all` creates the new table with its constraints and triggers, every row is copied
+as attempt 1, a missing-row check runs (`SchemaMigrationError`, nothing dropped), then the old
+table is dropped. The receipt columns are added with `ALTER TABLE ... ADD COLUMN`; the identity
+trigger is created for the existing table. An interrupted upgrade resumes on the next start;
+running it twice is harmless. Tested against `tests/fixtures/schema_v3.sql` (the exact Phase 03
+DDL) in `tests/test_schema_migration_v4.py`, including a Phase 03 approval that still submits.

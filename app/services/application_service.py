@@ -29,7 +29,6 @@ from app.core.exceptions import (
     MandateInactiveError,
     NotFoundError,
     TransitionNotAuthorizedError,
-    UnverifiedReferenceError,
 )
 from app.domain.application import DepotApplication
 from app.domain.audit import AuditEvent
@@ -58,6 +57,7 @@ from app.services.authorization_service import (
     ApplicationCredentials,
     AuthorizationService,
 )
+from app.services.catalog_policy import resolve_offer
 
 OPERATION_CREATE_APPLICATION = "create_application"
 MANDATE_AUDIENCE = AGENT_API_AUDIENCE  # kept for callers of the Phase 02 name
@@ -151,15 +151,15 @@ class ApplicationService:
         )
 
     def _require_verified_references(self, command: CreateApplicationCommand) -> None:
-        """Only providers, products and channels of the verified catalog may enter the workflow."""
-        try:
-            self._catalog.get_provider(command.provider_id)
-            products = {p.product_id for p in self._catalog.list_products(command.provider_id)}
-            channels = {c.channel_id for c in self._catalog.list_channels(command.provider_id)}
-        except NotFoundError:
-            raise UnverifiedReferenceError() from None
-        if command.product_id not in products or command.channel_id not in channels:
-            raise UnverifiedReferenceError()
+        """Only providers, products and channels of the verified catalog may enter the
+        workflow - and only while they are usable (validity window, active channel)."""
+        resolve_offer(
+            self._catalog,
+            provider_id=command.provider_id,
+            product_id=command.product_id,
+            channel_id=command.channel_id,
+            now=self._clock(),
+        )
 
     # --- create (idempotent) ------------------------------------------------------------
 

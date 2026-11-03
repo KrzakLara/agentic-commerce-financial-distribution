@@ -2,12 +2,17 @@
 
 A modular-monolith FastAPI project for the TRUSTEQ GmbH AI Engineering case study.
 
-**Current status: Phase 03 - scoped agent authorization.** The complete SIMULATED onboarding
-(Phase 02) now runs with opaque, short-lived, server-side bearer tokens: issuer, audience,
-expiry, `jti`, revocation, per-request resource binding and one scope per operation. The agent's
-first narrow grant comes from a trusted dev bootstrap; its onboarding privileges are revoked at
-`OPENED`. The customer's confirmation stays separate and is hardened (server-side session, CSRF
-tokens). Phases 00-02 (foundation, persistence, state machine, end-to-end flow) are complete.
+**Current status: Phase 04 - verified discovery, disclosures, attribution and human review.**
+Provider manifests are signed, versioned and expiring and are verified against the bank's own
+register (identity, domain, endpoint, capabilities, channels, no rollback); product terms and the
+attributed partner are bound into what the customer approves, so changed terms invalidate an old
+approval; a customer can ask for a person with the **"Mit einer Person sprechen"** button
+(server-side customer session + CSRF), a synthetic compliance `REVIEW_REQUIRED` opens a durable
+review case, and a bank operator can re-evaluate with evidence - never override. The **P0 core is
+frozen** ([docs/phase-04-traceability.md](docs/phase-04-traceability.md#p0-core-freeze)). Three
+reproducible demo outcomes: **HAPPY**, **DENIED**, **MANUAL REVIEW**. Phases 00-03 (foundation,
+persistence, state machine, end-to-end flow, scoped agent authorization) are complete; see
+[docs/phase-04-traceability.md](docs/phase-04-traceability.md).
 
 > **Everything here is a prototype with synthetic data.** KYC, compliance/AML, contract signing
 > and the depot provider are **MOCK**. The customer sign-in is a **development-only simulation**,
@@ -96,9 +101,9 @@ Trusteq/
 │   ├── repositories/      # ORM models, repositories, unit of work (SQLAlchemy/SQLite), schema upgrade
 │   ├── integrations/      # ports, MOCK adapters, verified catalog fixture, REST agent gateway + token store
 │   └── agents/            # ScriptedCustomerAgent (untrusted zone T0b)
-├── tests/                 # pytest suite (+ fixtures/schema_v2.sql for the upgrade test)
-├── docs/                  # architecture, authorization, flow, trust boundaries, API, state machine, database
-├── scripts/               # setup.ps1, check.ps1, demo_happy.py, dev_auth.py, security_mutations.py
+├── tests/                 # pytest suite (+ fixtures/schema_v2.sql, schema_v3.sql for the upgrade tests)
+├── docs/                  # architecture, authorization, flow, trust boundaries, API, state machine, database, Phase 04 traceability
+├── scripts/               # setup.ps1, check.ps1, demo_happy/denied/manual_review.py, dev_auth.py, dev_operator.py, security_mutations.py
 ├── .env.example  .gitignore  pyproject.toml  README.md
 ```
 
@@ -122,11 +127,27 @@ py -3.12 -m venv .venv
 (Using `.\.venv\Scripts\python.exe` directly means you do not need to activate the venv, so no
 execution-policy change is required.) Shortcut: `powershell -ExecutionPolicy Bypass -File scripts\setup.ps1`
 
-## Run the complete demo (recommended first step)
+## Run the three demos (recommended first step)
 
 ```powershell
-.\.venv\Scripts\python.exe -m scripts.demo_happy
+.\.venv\Scripts\python.exe -m scripts.demo_happy           # HAPPY: ... -> OPENED
+.\.venv\Scripts\python.exe -m scripts.demo_denied          # DENIED: refused, audited, state unchanged
+.\.venv\Scripts\python.exe -m scripts.demo_manual_review   # MANUAL REVIEW: case, request-human, operator
 ```
+
+All three are offline (no LLM key, no network beyond `127.0.0.1`), deterministic, use their own
+throw-away database, print no token, challenge or key, and exit non-zero if any check fails.
+
+**2-3 minute presentation** (each demo runs in seconds; the times below are speaking time): run
+`demo_happy --no-restart` (about 40 s: agent drafts, customer
+confirms on the bank page, provider confirms, `OPENED`, privileges revoked); then `demo_denied`
+(about 30 s: show sections 2 "prompt-injected agent" and 4 "manifests never load", and the line
+"NOT REJECTED"); then `demo_manual_review` (about 60 s: show sections 2-3 "generic state
+ACTION_REQUIRED", 4 the generic acknowledgement and 5 the operator console with the refused
+decisions and the re-evaluation as attempt 2). Close on the transition list in section 7:
+`MANUAL_REVIEW -> COMPLIANCE_PENDING by OPERATOR`, `OPENED by DEPOT_PROVIDER_CONFIRMATION`.
+
+### What `demo_happy` shows
 
 It creates a throw-away database in your temp folder, starts the real server, and plays four
 separate actors (agent, customer, bank, MOCK provider): the bank's trusted bootstrap grant,
@@ -139,6 +160,17 @@ after `OPENED`. Then it restarts the server to prove the result and the revocati
 prints ids, scopes and states, never a token, the one-time challenge or any other credential,
 deletes its temp data, and exits `0` only if every check holds. Options: `--keep`,
 `--no-restart`. It never touches `trusteq.db`.
+
+`demo_denied` shows made-up providers, fabricated or ended partner channels and a self-chosen
+commission recipient being refused (`422`), a prompt-injected agent that tries to confirm for the
+customer, set `OPENED`, submit early or act on the customer channel (all refused), stolen and
+forged credentials, seven manifest attacks rejected with their reason codes, and then that the
+application is still in its previous state (**not** `REJECTED`) and the real customer can
+continue. `demo_manual_review` shows the synthetic compliance review (`customer_ref`
+`synthetic-review-...`), the generic agent view, the customer signing in on the bank page and
+pressing **"Mit einer Person sprechen"** (a forged CSRF token is refused; the answer is the same
+neutral "Anfrage erhalten"), the operator console (`list`, `show`, `request-info`, refused decisions, `add-evidence`,
+`decide RE_EVALUATE`), compliance attempt 2 `PASS`, submission, `OPENED` and a restart.
 
 ## Start FastAPI
 
@@ -208,6 +240,15 @@ Invoke-RestMethod "$base/v1/applications/$($app.application_id)" -Headers $sts  
 Invoke-RestMethod -Method Post "$base/v1/applications/$($app.application_id)/submit" -Headers $onb  # 401: revoked
 ```
 
+Human review (Phase 04, DEV only - there is no operator HTTP endpoint):
+`python -m scripts.dev_operator --operator op-reviewer-1 list` / `show --case <id>` /
+`request-info` / `add-evidence` / `decide --decision RE_EVALUATE|RESUME|REJECT|ACKNOWLEDGE`
+(`REJECT` needs `op-supervisor-1`). A signed-in customer asks for a person with the
+**"Mit einer Person sprechen"** button on the bank page (review page and confirmation page) or
+with `POST /v1/customer/applications/{id}/request-human` - both need the customer's server-side
+session and its CSRF token for that application; a self-asserted `X-Dev-Customer-Id` header or
+an agent token is refused (details: [docs/onboarding-flow.md](docs/onboarding-flow.md)).
+
 Lost a token, or continuing an application created before Phase 03?
 `python -m scripts.dev_auth app-tokens --application-id <id>` re-issues its tokens (never wider);
 `python -m scripts.dev_auth revoke --jti <jti>` revokes one server-side.
@@ -219,7 +260,7 @@ Lost a token, or continuing an application created before Phase 03?
 ```
 
 Tests use in-memory or temporary SQLite databases, real HTTP-level clients, and never touch
-`trusteq.db`. The suite includes the end-to-end demo run.
+`trusteq.db`. The suite includes runs of all three demos.
 
 Targeted mutation testing of the security controls (each mutant breaks one control in a
 temporary copy - your files are never modified - and the suite must notice):
@@ -248,52 +289,51 @@ Copy-Item .env.example .env   # .env is git-ignored; never commit it
 All variables use the `TRUSTEQ_` prefix (see `.env.example`): app name, environment
 (`development` / `test` / `production`), debug, database URL, log level/format, AI execution mode
 (`scripted` / `llm`), optional LLM settings, the DEV/TEST switches (agent bootstrap issuance,
-simulated customer sign-in), lifetimes (handoff, onboarding grant, bootstrap grant, status
+simulated customer sign-in, operator console), lifetimes (handoff, onboarding grant, bootstrap grant, status
 grant, customer session), the MOCK provider callback secret, and allowed CORS origins. Invalid
 combinations fail at startup: e.g. `debug=true`, an explicit dev switch, or the mock callback
 secret in **production**; or `llm` mode without `TRUSTEQ_ENABLE_LLM=true`. Phase 03 removed
 `TRUSTEQ_DEV_ACTOR_AUTH_ENABLED` (the `X-Dev-Actor-Id` header no longer exists).
 
-## Implemented vs mocked vs production target
+## Implemented (2026 prototype) vs mocked vs 2030 target
 
-| Area | Phase 03 prototype | Production target (not built) |
-|---|---|---|
-| Provider discovery | verified local fixture, digests pinned in code, allowlist, fail closed | signed manifests, TLS/domain binding, expiry, trust registry |
-| Agent | scripted, REST only, no key | optional LLM behind an explicit flag (Phase 05) |
-| Agent authorization | **real and tested, controlled DEV implementation**: opaque 256-bit bearer tokens stored as SHA-256 hashes; issuer, audience, expiry, `jti`, revocation, per-operation scopes, resource binding; single-use bootstrap grant; revoked at terminal states | OAuth 2.0 authorization server, FAPI 2.0 profile, client authentication, sender-constrained tokens (DPoP/mTLS), RFC 9396 rich authorization requests, RFC 8693 token exchange |
-| First agent grant | trusted dev bootstrap CLI (no HTTP endpoint) | onboarding/consent flow with the customer at the bank |
-| Customer authentication | **DEV simulation** (sign-in form, `X-Dev-Customer-Id` for the JSON API) | bank-controlled strong authentication (eID / EUDI wallet) |
-| Customer session + CSRF | real: server-side session (hashed secret, expiry, rotation), HttpOnly/SameSite=Strict/Secure-on-HTTPS cookie, session- and handoff-bound CSRF, login CSRF, `Sec-Fetch-Site`/`Origin` checks | the same behind the bank's real identity provider |
-| Handoff | real one-time, expiring, action-digest- and identity-bound challenge | same, with wallet-backed approval |
-| KYC / compliance / contract | **MOCK**, fixed results, `mock=true`, `MOCK-` references | contracted regulated providers |
-| Depot provider | **MOCK**, HMAC-signed callback is the only path to `OPENED` | partner integration, mutual TLS |
-| Recovery after a crash | real: the next authorized `submit` resumes unfinished checks (bounded, idempotent, fail closed) | durable workflow engine / job queue with operator tooling |
-| Policy, state machine, audit, idempotency, persistence | real and tested | HA database, DORA controls, security review |
+| Area | Implemented and tested (2026 prototype) | Mocked / simulated | 2030 target (not built) |
+|---|---|---|---|
+| Provider discovery | bank register as trust root; pinned digest; signed, versioned, expiring manifests; identity/domain/endpoint/capability/channel binding; no rollback; validity re-checked at use; fail closed | synthetic provider, partners and register; HMAC with a shared DEV key; no network fetch | provider-signed manifests (JWS / eIDAS seal) over mTLS from the verified domain, key rotation and revocation |
+| Product information + disclosures | versioned terms, fees, conditions, risk, sources with digests, terms digest; receipts bound to exact versions and the action digest; stale approvals refused at confirm and submit | all content synthetic | provider feeds with legal sign-off, wallet-based signed consent, re-consent flow |
+| Partner attribution | registry-based, customer-confirmed, append-only; the agent cannot name a recipient | synthetic partners; no commission | contractual partner registry, commission settlement |
+| Human review | durable cases, generic customer acknowledgement, fixed operator decisions, re-evaluation as a new deterministic attempt, supervisor-only rejection, audit | synthetic operators and evidence references; MOCK compliance scenario switch | case management with SSO, RBAC, four-eyes, SLAs, evidence store |
+| Agent | scripted, REST only, no key | - | optional LLM behind an explicit flag (Phase 05) |
+| Agent authorization | **real and tested, controlled DEV implementation**: opaque bearer tokens stored as SHA-256 hashes; issuer, audience, expiry, `jti`, revocation, per-operation scopes, resource binding; single-use bootstrap; revoked at terminal states | first grant from a trusted DEV CLI | OAuth 2.0 / FAPI 2.0, sender-constrained tokens (DPoP/mTLS), RFC 9396 / RFC 8693 |
+| Customer authentication + intervention | server-side session (hashed secret, HttpOnly/SameSite=Strict/Secure-on-HTTPS cookies for the pages and the customer API, expiry, rotation) + per-target CSRF tokens; "Mit einer Person sprechen" and `request-human` require both | **DEV simulation** of the sign-in itself; `X-Dev-Customer-Id` only on the Phase 02 JSON confirmation ceremony | bank-controlled strong authentication (online banking / eID / EUDI wallet), a customer case view, phone/chat channels |
+| KYC / compliance / contract / depot provider | the deterministic workflow around them; the signed callback is the only path to `OPENED` | **MOCK** results, `mock=true`, `MOCK-` references | contracted regulated providers, partner integration with mTLS |
+| Policy, state machine, audit, idempotency, persistence, recovery | real and tested (schema v4 with resumable upgrades) | - | HA database, durable workflow engine, DORA controls, security review |
 
 ## Current security limitations
 
-* The **customer sign-in is a simulation**: anyone who completes the dev sign-in or sends the dev
-  customer header can claim any customer. It is disabled in production (fail closed).
-* Agent tokens are **bearer tokens**: whoever holds one can use it until it expires or is revoked
-  (no DPoP/mTLS binding, no client authentication). There is no refresh flow; a lost token is
-  re-issued by an operator. No rate limiting.
-* The **first grant** comes from a trusted operator CLI, not from a customer-facing consent flow.
-* The provider-callback secret is a shared mock credential; the endpoint is disabled by default
-  and refused in production.
-* A non-passing check parks the application in `MANUAL_REVIEW`; there is no operator workflow,
-  review case or `request-human` endpoint yet.
+* The **customer sign-in and the operator identities are simulations**: anyone who completes the
+  dev sign-in can claim any customer (what is real is the server-side session, its expiry,
+  rotation, cookie flags and CSRF binding around it); the Phase 02 JSON confirmation ceremony
+  still accepts the dev customer header; anyone who can run the operator console on the server
+  can act as a synthetic operator. All of these are disabled in production.
+* There is no customer-facing case view (`GET /v1/customer/cases/{id}` from ADR section 09 is
+  deferred: it must never reveal internal review reasons).
+* Manifest signatures use a **shared HMAC key** (a symmetric stand-in): whoever holds the key could
+  also sign. The key, provider, partners and register are synthetic and fixture-local.
+* Agent tokens are **bearer tokens** (no DPoP/mTLS binding, no client authentication, no refresh
+  flow, no rate limiting).
+* A change of terms after the customer's consent blocks submission (fail closed); there is no
+  re-consent flow - a new application is needed.
 * Mock results are not legal, AML or identity evidence. Not legal advice and no regulatory
-  compliance or certification is claimed; counsel review is required before any real deployment.
+  compliance or certification is claimed (no BaFin, MiFID II or WpHG claim); counsel review is
+  required before any real deployment.
 
-## Next implementation phases
+## Next implementation phase
 
-1. **Phase 04** - verified discovery hardening (signed/expiring manifests, fake/tampered provider
-   tests), registered channel attribution, disclosure receipts per document version, mock
-   compliance `REVIEW_REQUIRED` -> `MANUAL_REVIEW` with a generic agent status, and the three
-   reproducible demo outcomes `happy`, `denied`, `manual_review`.
-2. **Phase 05** - optional LLM behind an explicit flag, 20-case evaluation.
+**Phase 05** - optional LLM behind an explicit flag, 20-case evaluation (not started).
 
 ## Git
 
-Local Git repository on `main`; nothing is pushed. `.gitignore` excludes `.env`, `.venv/`,
-caches, SQLite files (including WAL files), build output, temp files and `.claude/`.
+Branch `main`, tracking a **private** GitHub repository (`origin`). Phase 04 work stays local
+and uncommitted until it is reviewed. `.gitignore` excludes `.env`, `.venv/`, caches, SQLite files
+(including WAL files), build output, temp files and `.claude/`.

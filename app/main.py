@@ -31,6 +31,14 @@ not production OAuth 2.0 / FAPI 2.0. The customer confirms separately on the ban
 page (DEV-simulated sign-in with a server-side session and CSRF protection). Only a signed MOCK
 depot-provider confirmation can set `OPENED`; it revokes the onboarding credentials. KYC,
 compliance, contract signing and the depot provider are MOCK, never real financial operations.
+
+**Phase 04 - verified discovery and human review.** Provider manifests are signed, versioned and
+expiring and must match the bank's own register (identity, verified domain, approved endpoint,
+capabilities, channels). Product terms, the disclosure version and the registered partner are
+bound into what the customer approves. A customer can ask for a person
+(`POST /v1/customer/applications/{id}/request-human`); review cases are handled by bank staff
+through a trusted DEV console - never over this API, and never by approving a check or opening
+an account. All providers, partners, keys and operators are synthetic.
 """
 
 OPENAPI_TAGS = [

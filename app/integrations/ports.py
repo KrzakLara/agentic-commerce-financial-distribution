@@ -6,6 +6,7 @@ from typing import Protocol
 from app.domain.application import DepotApplication
 from app.domain.audit import AuditEvent
 from app.domain.catalog import Channel, Product, Provider
+from app.domain.enums import ReviewEvidenceCategory
 from app.domain.receipts import ConsentReceipt
 from app.integrations.results import CheckResult, ProviderSubmission, SigningResult
 
@@ -13,9 +14,11 @@ from app.integrations.results import CheckResult, ProviderSubmission, SigningRes
 class ProviderDiscoveryPort(Protocol):
     """Verified provider discovery.
 
-    Phase 02 uses a deterministic local fixture with pinned digests; signed manifests, TLS
-    binding and expiry arrive in Phase 04. Implementations raise `NotFoundError` for unknown
-    providers and `CatalogIntegrityError` when verification fails.
+    Phase 04: a deterministic local fixture whose manifests are checked against the bank's
+    provider register, pinned digests, a trust-anchor signature, domain/endpoint binding,
+    capabilities, channels, version and validity window (see `catalog_fixture`).
+    Implementations raise `NotFoundError` for unknown providers and `CatalogIntegrityError`
+    when verification fails. Time validity is re-checked at use (`catalog_policy`).
     """
 
     def list_providers(self) -> Sequence[Provider]: ...
@@ -30,13 +33,20 @@ class ProviderDiscoveryPort(Protocol):
 
 
 class KycPort(Protocol):
-    def verify_identity(self, application: DepotApplication) -> CheckResult: ...
+    """Identity verification. `evidence` (Phase 04) is passed only on a re-evaluation that an
+    operator authorized after human review: categories of recorded, permitted evidence."""
+
+    def verify_identity(
+        self, application: DepotApplication, evidence: Sequence[ReviewEvidenceCategory] = ()
+    ) -> CheckResult: ...
 
 
 class CompliancePort(Protocol):
     """AML/compliance assessment. Raw flags and rationale stay inside T2/T3."""
 
-    def assess(self, application: DepotApplication) -> CheckResult: ...
+    def assess(
+        self, application: DepotApplication, evidence: Sequence[ReviewEvidenceCategory] = ()
+    ) -> CheckResult: ...
 
 
 class ContractSigningPort(Protocol):

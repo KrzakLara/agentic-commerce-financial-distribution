@@ -231,6 +231,26 @@ class CustomerMismatchError(PolicyDeniedError):
         return "The authenticated customer is not the customer of this application."
 
 
+class CsrfTokenInvalidError(PolicyDeniedError):
+    """A state-changing customer request without the session's CSRF token for this target."""
+
+    code = "csrf_token_invalid"
+
+    @classmethod
+    def default_message(cls) -> str:
+        return "This form is no longer valid. Please reload the page."
+
+
+class CrossSiteRequestError(PolicyDeniedError):
+    """A browser marked the customer request as coming from another site."""
+
+    code = "cross_site_request"
+
+    @classmethod
+    def default_message(cls) -> str:
+        return "Cross-site request."
+
+
 class ServiceDisabledError(AppError):
     status_code = 503
     code = "service_disabled"

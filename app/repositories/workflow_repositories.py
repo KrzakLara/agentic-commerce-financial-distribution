@@ -12,14 +12,29 @@ from datetime import datetime
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.domain.attribution import ChannelAttribution
 from app.domain.checks import CheckRecord, DepotSubmissionRecord
 from app.domain.customer_session import CustomerSession
-from app.domain.enums import CheckOutcome, CheckType, MandateKind, MandateScope
+from app.domain.enums import (
+    ApplicationStatus,
+    AuditActorType,
+    CheckOutcome,
+    CheckType,
+    HumanRequestCategory,
+    MandateKind,
+    MandateScope,
+    ReviewCaseReason,
+    ReviewCaseStatus,
+    ReviewDecision,
+    ReviewEvidenceCategory,
+)
 from app.domain.handoff import ApprovedAction, Handoff
 from app.domain.mandate import AgentAccessToken, Mandate
 from app.domain.receipts import ConsentReceipt, DisclosureReceipt
+from app.domain.review import ManualReviewCase, ReviewEvidence
 from app.repositories.orm import (
     AgentAccessTokenRow,
+    ChannelAttributionRow,
     CheckResultRow,
     ConsentReceiptRow,
     CustomerSessionRow,
@@ -27,6 +42,7 @@ from app.repositories.orm import (
     DisclosureReceiptRow,
     HandoffRow,
     MandateRow,
+    ReviewCaseRow,
 )
 
 
@@ -351,6 +367,18 @@ class SqlAlchemyReceiptRepository:
         return DisclosureReceipt.model_validate(row, from_attributes=True) if row else None
 
 
+def _check_to_domain(row: CheckResultRow) -> CheckRecord:
+    return CheckRecord(
+        application_id=row.application_id,
+        check_type=CheckType(row.check_type),
+        outcome=CheckOutcome(row.outcome),
+        reference=row.reference,
+        mock=row.mock,
+        created_at=row.created_at,
+        attempt=row.attempt,
+    )
+
+
 class SqlAlchemyCheckRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -364,27 +392,171 @@ class SqlAlchemyCheckRepository:
                 reference=record.reference,
                 mock=record.mock,
                 created_at=record.created_at,
+                attempt=record.attempt,
             )
         )
         self._session.flush()
 
     def get(self, application_id: str, check_type: CheckType) -> CheckRecord | None:
+        """The LATEST attempt of this check (the one the policy gate decides on)."""
+        row = (
+            self._session.execute(
+                select(CheckResultRow)
+                .where(
+                    CheckResultRow.application_id == application_id,
+                    CheckResultRow.check_type == check_type.value,
+                )
+                .order_by(CheckResultRow.attempt.desc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        return _check_to_domain(row) if row else None
+
+    def list_for_application(self, application_id: str) -> list[CheckRecord]:
+        rows = self._session.execute(
+            select(CheckResultRow)
+            .where(CheckResultRow.application_id == application_id)
+            .order_by(CheckResultRow.id)
+        ).scalars()
+        return [_check_to_domain(row) for row in rows]
+
+
+def _case_to_domain(row: ReviewCaseRow) -> ManualReviewCase:
+    return ManualReviewCase(
+        case_id=row.case_id,
+        application_id=row.application_id,
+        reason=ReviewCaseReason(row.reason),
+        status=ReviewCaseStatus(row.status),
+        created_at=row.created_at,
+        check_type=CheckType(row.check_type) if row.check_type else None,
+        check_attempt=row.check_attempt,
+        request_category=HumanRequestCategory(row.request_category)
+        if row.request_category
+        else None,
+        interrupted_step=ApplicationStatus(row.interrupted_step) if row.interrupted_step else None,
+        opened_by=AuditActorType(row.opened_by),
+        requested_information=ReviewEvidenceCategory(row.requested_information)
+        if row.requested_information
+        else None,
+        evidence=tuple(ReviewEvidence.model_validate(item) for item in row.evidence or []),
+        resolution=ReviewDecision(row.resolution) if row.resolution else None,
+        resolved_by=row.resolved_by,
+        resolved_at=row.resolved_at,
+        version=row.version,
+    )
+
+
+class SqlAlchemyReviewCaseRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, case: ManualReviewCase) -> None:
+        """Insert. Raises `IntegrityError` if the application already has an active case."""
+        self._session.add(
+            ReviewCaseRow(
+                case_id=case.case_id,
+                application_id=case.application_id,
+                reason=case.reason.value,
+                status=case.status.value,
+                check_type=case.check_type.value if case.check_type else None,
+                check_attempt=case.check_attempt,
+                request_category=case.request_category.value if case.request_category else None,
+                interrupted_step=case.interrupted_step.value if case.interrupted_step else None,
+                opened_by=case.opened_by.value,
+                requested_information=None,
+                evidence=[],
+                resolution=None,
+                resolved_by=None,
+                resolved_at=None,
+                created_at=case.created_at,
+                updated_at=case.created_at,
+                version=1,
+            )
+        )
+        self._session.flush()
+
+    def get(self, case_id: str) -> ManualReviewCase | None:
         row = self._session.execute(
-            select(CheckResultRow).where(
-                CheckResultRow.application_id == application_id,
-                CheckResultRow.check_type == check_type.value,
+            select(ReviewCaseRow)
+            .where(ReviewCaseRow.case_id == case_id)
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        return _case_to_domain(row) if row else None
+
+    def get_active_for_application(self, application_id: str) -> ManualReviewCase | None:
+        row = self._session.execute(
+            select(ReviewCaseRow)
+            .where(
+                ReviewCaseRow.application_id == application_id,
+                ReviewCaseRow.status != ReviewCaseStatus.CLOSED.value,
+            )
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        return _case_to_domain(row) if row else None
+
+    def list_active(self) -> list[ManualReviewCase]:
+        rows = self._session.execute(
+            select(ReviewCaseRow)
+            .where(ReviewCaseRow.status != ReviewCaseStatus.CLOSED.value)
+            .order_by(ReviewCaseRow.created_at, ReviewCaseRow.case_id)
+        ).scalars()
+        return [_case_to_domain(row) for row in rows]
+
+    def list_for_application(self, application_id: str) -> list[ManualReviewCase]:
+        rows = self._session.execute(
+            select(ReviewCaseRow)
+            .where(ReviewCaseRow.application_id == application_id)
+            .order_by(ReviewCaseRow.created_at, ReviewCaseRow.case_id)
+        ).scalars()
+        return [_case_to_domain(row) for row in rows]
+
+    def update(self, case: ManualReviewCase, *, expected_version: int, at: datetime) -> bool:
+        """Compare-and-set of the mutable fields (status, information request, evidence,
+        resolution). False if someone else changed the case first."""
+        result = self._session.execute(
+            update(ReviewCaseRow)
+            .where(
+                ReviewCaseRow.case_id == case.case_id,
+                ReviewCaseRow.version == expected_version,
+            )
+            .values(
+                status=case.status.value,
+                requested_information=case.requested_information.value
+                if case.requested_information
+                else None,
+                evidence=[item.model_dump(mode="json") for item in case.evidence],
+                resolution=case.resolution.value if case.resolution else None,
+                resolved_by=case.resolved_by,
+                resolved_at=case.resolved_at,
+                updated_at=at,
+                version=expected_version + 1,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        return _rowcount(result) == 1
+
+
+class SqlAlchemyChannelAttributionRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, attribution: ChannelAttribution) -> None:
+        self._session.add(
+            ChannelAttributionRow(
+                **{**attribution.model_dump(), "channel_kind": attribution.channel_kind.value}
+            )
+        )
+        self._session.flush()
+
+    def get(self, application_id: str) -> ChannelAttribution | None:
+        row = self._session.execute(
+            select(ChannelAttributionRow).where(
+                ChannelAttributionRow.application_id == application_id
             )
         ).scalar_one_or_none()
-        if row is None:
-            return None
-        return CheckRecord(
-            application_id=row.application_id,
-            check_type=CheckType(row.check_type),
-            outcome=CheckOutcome(row.outcome),
-            reference=row.reference,
-            mock=row.mock,
-            created_at=row.created_at,
-        )
+        return ChannelAttribution.model_validate(row, from_attributes=True) if row else None
 
 
 class SqlAlchemyDepotSubmissionRepository:

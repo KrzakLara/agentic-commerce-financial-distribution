@@ -115,7 +115,7 @@ def test_a_phase02_database_is_upgraded_in_place_without_losing_data(tmp_path: P
     upgrade(db)
 
     with sqlite3.connect(db) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 3
+        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 4
         for table, rows in before.items():
             assert con.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall() == rows  # noqa: S608
         con.row_factory = sqlite3.Row
@@ -175,7 +175,7 @@ def test_upgrading_twice_is_harmless(tmp_path: Path) -> None:
     upgrade(db)
     with sqlite3.connect(db) as con:
         assert con.execute("SELECT * FROM mandates ORDER BY 1").fetchall() == first
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_an_upgrade_interrupted_after_the_first_step_resumes(tmp_path: Path) -> None:
@@ -192,7 +192,7 @@ def test_an_upgrade_interrupted_after_the_first_step_resumes(tmp_path: Path) -> 
             2,
             "onboarding",
         )
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert "_mandates_v2" not in objects(db, "table")
     assert "trg_mandates_revocation_is_final" in objects(db, "trigger")
 

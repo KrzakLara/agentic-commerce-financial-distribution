@@ -124,9 +124,9 @@ missing items go to the audit log only. No LLM output is read anywhere in this p
 
 | Service | What it does | What it does NOT do |
 |---|---|---|
-| Provider catalog (fixture) | verified, pinned-digest synthetic provider/product/channels/disclosure | no BaFin/LEI lookup, no signed manifest, no TLS binding |
+| Provider catalog (fixture) | synthetic provider, products, channels and documents; verified against the bank's register, pinned digests, a DEV-key signature, domain/endpoint, capabilities, channels, version and validity (Phase 04) | no BaFin/LEI lookup, no network fetch, no asymmetric signature, no TLS binding |
 | MOCK KYC | returns a configured outcome (default `PASS`), reference `MOCK-KYC-...` | no identity verification |
-| MOCK compliance | returns a configured outcome (default `PASS`) | no AML, sanctions or suitability checks |
+| MOCK compliance | returns a configured outcome (default `PASS`); `REVIEW_REQUIRED` for customer refs starting `synthetic-review-` (Phase 04 scenario switch); resolved only by the evidence category `SOURCE_OF_FUNDS_CONFIRMATION` on a re-evaluation | no AML, sanctions or suitability checks |
 | MOCK contract | records that the authenticated simulated customer confirmed the contract and disclosure version | no legally valid signature |
 | MOCK depot provider | accepts the hand-over (`MOCK-DEPOT-...`); its signed callback is the only way to `OPENED` | no real custody or account |
 
@@ -176,15 +176,124 @@ There is deliberately no background worker or startup sweep: recovery happens on
 legitimate request, so nothing runs without an authorized caller. An application whose agent never
 comes back stays parked - visible to operators, not lost.
 
-## Known limitations (after Phase 03)
+## Known limitations (after Phase 04)
 
 * The customer sign-in and the JSON ceremony's `X-Dev-Customer-Id` header are DEV simulations.
 * Agent tokens are bearer tokens: a stolen token works until it expires or is revoked (no DPoP /
   mTLS binding); there is no refresh flow (a lost token is re-issued by an operator).
 * The callback shared secret is a mock credential; a real provider needs mutual TLS / signed messages.
-* A non-`PASS` check parks the application in `MANUAL_REVIEW` (conservative). There is no operator
-  workflow, review case, `request-human` or `REJECTED` decision logic yet.
-* One check result per kind per application; no re-check history.
-* Catalog verification is a pinned local fixture, not signed manifests or a trust registry (Phase 04).
+* Phase 04: a non-`PASS` check opens a review case; operators work through a DEV console with
+  synthetic identities (no SSO/RBAC, no four-eyes beyond supervisor-only rejection).
+* Phase 04: check results are append-only attempts; the latest attempt decides.
+* Phase 04: manifests are signed with a shared DEV HMAC key (a symmetric stand-in), fixture-local.
 * No rate limiting; a flood of requests with a once-valid token writes one audit row each.
 * Single-writer SQLite; one hand-written schema upgrade step instead of a migration tool.
+
+## Phase 04: verified discovery, disclosure binding, partner attribution
+
+**How the bank verifies a provider** (`app/integrations/catalog_fixture.py`, at every start; fail
+closed): the provider must be in the bank's own register; the manifest digest must be the one
+the bank pinned; every referenced document must match its digest; the manifest must carry a valid
+signature by exactly the trust anchor the register names for this provider; official name, role,
+registry reference, verified domain and API endpoint must equal the register (an `https`
+endpoint on the verified domain, and on the approved list); capabilities and channels must be
+within what the register approved; the version must not be older than the approved minimum; and
+the manifest must be inside its validity window - re-checked on every use
+(`app/services/catalog_policy.py`). A registry reference (LEI) or a name alone proves nothing:
+anybody can copy them into a manifest.
+
+**How disclosure versions are bound:** the approved action contains the product version, the
+disclosure document id/version/digest, the `terms_digest` (fees, conditions, risk information,
+sources, dates) and the partner. At confirmation the bank re-derives the action from the live
+catalog and refuses if anything differs; the disclosure receipt then records provider, product,
+product version, document version/digest, terms digest, action digest and the confirmation time.
+At submit the bank checks again that the live catalog still offers exactly the approved action.
+
+**How partner attribution is validated:** the agent can only name a channel id. The channel must
+be registered for the provider, active (also in the bank's partner register - an ended
+partnership deactivates it), serve the product, and name a registered partner *bank* (never a
+fund provider or the depot provider itself). The partner comes from the registry, is shown on the
+confirmation page, is bound into the approved action and is recorded with the consent in the
+append-only `channel_attributions` table. Unknown fields such as `partner_id` or
+`commission_recipient` in the agent's request are rejected.
+
+## Phase 04: the three demo outcomes
+
+```text
+HAPPY          as above: ... -> SUBMITTED_TO_DEPOT_PROVIDER -> OPENED (provider callback)
+
+DENIED         agent proposes a fake provider / fabricated or inactive channel / its own
+               commission recipient -> 422; confirms for the customer, sets OPENED, submits early,
+               acts on the customer channel, uses a read-only or forged token -> 401/403/404/405/409;
+               fake/tampered/expired/substituted manifests never load.  Every refusal is audited,
+               the application's business state does NOT change (denied is not REJECTED), and the
+               real customer can still continue.
+
+MANUAL REVIEW  customer confirms -> KYC PASS -> MOCK compliance REVIEW_REQUIRED
+               -> MANUAL_REVIEW (resume_status COMPLIANCE_PENDING) + review case (internal reason)
+               agent sees ACTION_REQUIRED; submit 409; a signed provider callback is refused
+               customer (bank page, session + CSRF): presses "Mit einer Person sprechen"
+               -> "Anfrage erhalten" (joins the case; the same neutral answer as always)
+               operator: request-info -> (RE_EVALUATE refused while waiting; REJECT needs a
+               supervisor) -> add-evidence SYN-SOF-0001 -> decide RE_EVALUATE
+               -> MANUAL_REVIEW -> COMPLIANCE_PENDING (OPERATOR) -> compliance attempt 2 PASS
+               -> CONTRACT_PENDING -> agent submits -> provider callback -> OPENED
+```
+
+### Asking for a person: the "Mit einer Person sprechen" button
+
+The signed-in (simulated) customer sees the button on the bank-controlled review page - before
+the contract - and again on the confirmation page - after it (ADR section 09: "before contract;
+sometimes after"). It sends one of four fixed categories (no free text) to
+`POST /customer/applications/{id}/request-human`; JSON clients use the approved API path
+`POST /v1/customer/applications/{id}/request-human`. Both go through ONE gate, in this order:
+
+1. no `Authorization` header - an agent credential is refused (401) and audited;
+2. not a cross-site browser request (`Sec-Fetch-Site` / `Origin`; 403);
+3. an ACTIVE server-side customer session. The (simulated) sign-in puts the SAME session secret
+   into two HttpOnly, SameSite=Strict cookies (Secure on HTTPS): `trusteq_customer_session`
+   (path `/customer` - the pages and the button) and `trusteq_customer_api` (path
+   `/v1/customer` - the customer JSON API). The server stores only the hash and decides expiry
+   (15 minutes) and revocation (a new sign-in rotates the session; both cookies die with it).
+   Missing, unknown, expired or revoked: 401;
+4. a CSRF token `HMAC(session secret, "csrf|human|<application_id>")`: the bank page embeds it
+   in the form (field `csrf_token`); a JSON client sends it as `X-CSRF-Token`. It is useless for
+   another session, another application or another purpose (403 `csrf_token_invalid`);
+5. then the workflow: only the application's OWN customer (else 404, same answer as an unknown
+   id), at most one active case (a repeat joins it), the same neutral acknowledgement every time.
+
+The self-asserted `X-Dev-Customer-Id` header is NOT a credential here (it remains only for the
+Phase 02 JSON confirmation ceremony). Every refusal is audited as `review.human_request_denied`
+with a machine reason only (`agent_credentials_presented`, `cross_site_request`,
+`no_customer_session`, `csrf_token_invalid`, `not_the_customer`, `unknown_application`) - never
+with compliance detail.
+
+The application stays where the checks put it: a request pauses an application that is still
+in a pausable step (`MANUAL_REVIEW`, remembering the step), joins a case that compliance already
+opened, and never pauses, skips or replaces a check - only an operator decision can continue,
+and OPENED still needs the provider's signed confirmation.
+
+### Rules of the human review
+
+* One active case per application (database-enforced). A request while a case is open joins it.
+* The customer's answer is identical whether or not a case existed and whatever its reason.
+* Decisions are a fixed list: `RE_EVALUATE` (check cases; waits while requested information is
+  outstanding), `RESUME` (customer cases), `REJECT` (supervisor), `ACKNOWLEDGE` (cases that do
+  not hold the workflow, e.g. after submission). None of them leads to `OPENED`.
+* `RE_EVALUATE` never edits a result: the check runs again as attempt n+1 with the recorded,
+  permitted evidence categories (`SOURCE_OF_FUNDS_CONFIRMATION`, `IDENTITY_REVERIFICATION`,
+  `ADDRESS_CONFIRMATION`, `CUSTOMER_CLARIFICATION`; synthetic `SYN-...` references only), and
+  the deterministic result decides - including parking again with a new case.
+* Every step is audited (`review.case_opened`, `review.human_requested`,
+  `review.information_requested`, `review.evidence_recorded`, `review.decision_denied`,
+  `review.decided`, `check.re_evaluated`).
+
+Operator console (DEV only, refuses in production; no HTTP route):
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.dev_operator --operator op-reviewer-1 list
+.\.venv\Scripts\python.exe -m scripts.dev_operator --operator op-reviewer-1 show --case <case_id>
+.\.venv\Scripts\python.exe -m scripts.dev_operator --operator op-reviewer-1 request-info --case <case_id> --category SOURCE_OF_FUNDS_CONFIRMATION
+.\.venv\Scripts\python.exe -m scripts.dev_operator --operator op-reviewer-1 add-evidence --case <case_id> --category SOURCE_OF_FUNDS_CONFIRMATION --reference SYN-SOF-0001
+.\.venv\Scripts\python.exe -m scripts.dev_operator --operator op-reviewer-1 decide --case <case_id> --decision RE_EVALUATE
+```

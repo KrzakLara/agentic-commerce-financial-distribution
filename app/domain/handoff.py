@@ -26,9 +26,16 @@ class ApprovedAction(DomainModel):
     document_id: OpaqueId
     document_version: ShortText
     document_digest: Sha256Hex
+    # Phase 04: the approved product terms and the partner the onboarding is attributed to.
+    terms_digest: Sha256Hex | None = None
+    partner_id: OpaqueId | None = None
 
     def digest(self) -> str:
-        canonical = json.dumps(self.model_dump(), sort_keys=True, separators=(",", ":"))
+        # Unset optional fields are left out, so actions approved before Phase 04 (without
+        # terms or partner) keep exactly the digest they were confirmed with.
+        canonical = json.dumps(
+            self.model_dump(exclude_none=True), sort_keys=True, separators=(",", ":")
+        )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

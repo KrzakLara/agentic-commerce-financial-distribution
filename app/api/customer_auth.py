@@ -5,13 +5,18 @@ controls (eID / EUDI wallet / online banking), independently of the AI agent. No
 exists in this prototype. This module provides a clearly labelled stand-in so the rest of the
 ceremony (identity binding, digest binding, one-time challenge) can be built and tested.
 
-Two DEV customer contexts, both switched off in production (`dev_customer_auth_active`):
+Customer contexts, all switched off in production (`dev_customer_auth_active`):
 
-* HTML pages (`/customer/...`): a SERVER-SIDE session (Phase 03). The dev sign-in form creates
-  it; the browser gets a random secret in an HttpOnly, SameSite=Strict cookie (Secure on
-  HTTPS), path ``/customer``; the server stores only its hash and enforces expiry. Forms also
-  need a session-bound CSRF token (see `app.services.customer_session_service`).
-* JSON ceremony (`POST /v1/customer/handoffs/{id}/confirm`): the ``X-Dev-Customer-Id`` header.
+* A SERVER-SIDE session (Phase 03), created by the DEV sign-in form. The server stores only the
+  hash of a random secret and decides expiry and revocation itself. The browser receives that
+  secret in HttpOnly, SameSite=Strict cookies (Secure on HTTPS), each scoped to one customer
+  prefix (Phase 04): ``trusteq_customer_session`` (path ``/customer``, the HTML pages) and
+  ``trusteq_customer_api`` (path ``/v1/customer``, the customer JSON API). Both carry the SAME
+  session: rotating, expiring or revoking it ends both. State-changing requests also need a
+  session-bound CSRF token (see `app.services.customer_session_service`).
+* JSON confirmation ceremony only (`POST /v1/customer/handoffs/{id}/confirm`): the
+  ``X-Dev-Customer-Id`` header (Phase 02 stand-in). It is NOT accepted anywhere else - in
+  particular not by ``request-human``, which needs the session.
 
 Separation from the agent: an agent's bearer token is never a customer credential. A request
 that carries an ``Authorization`` header is refused on every customer route, and customer
@@ -34,6 +39,10 @@ DEV_CUSTOMER_HEADER = "X-Dev-Customer-Id"
 SESSION_COOKIE = "trusteq_customer_session"
 LOGIN_COOKIE = "trusteq_customer_login"  # pre-session CSRF secret of the sign-in form
 COOKIE_PATH = "/customer"
+API_SESSION_COOKIE = "trusteq_customer_api"  # the same session, for the customer JSON API
+API_COOKIE_PATH = "/v1/customer"
+SESSION_COOKIES = ((SESSION_COOKIE, COOKIE_PATH), (API_SESSION_COOKIE, API_COOKIE_PATH))
+CSRF_HEADER = "X-CSRF-Token"
 LOGIN_COOKIE_MAX_AGE = 600
 _CUSTOMER_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
@@ -62,19 +71,22 @@ def agent_credentials_presented(request: Request) -> bool:
 
 
 def header_customer(settings: Settings, header_value: str | None) -> CustomerContext | None:
-    """The JSON API's DEV customer context, or None."""
+    """The JSON confirmation ceremony's DEV customer context, or None."""
     if not settings.dev_customer_auth_active or header_value is None:
         return None
     return CustomerContext(header_value) if is_valid_customer_id(header_value) else None
 
 
 def session_customer(
-    request: Request, settings: Settings, sessions: CustomerSessionService
+    request: Request,
+    settings: Settings,
+    sessions: CustomerSessionService,
+    cookie: str = SESSION_COOKIE,
 ) -> CustomerContext | None:
-    """The signed-in customer of the HTML pages (active server-side session), or None."""
+    """The signed-in customer (ACTIVE server-side session behind `cookie`), or None."""
     if not settings.dev_customer_auth_active:
         return None
-    secret = request.cookies.get(SESSION_COOKIE)
+    secret = request.cookies.get(cookie)
     session = sessions.resolve(secret)
     if session is None:
         return None

@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.agents import OpenDepotIntent, ScriptedCustomerAgent
-from app.api.customer_auth import SESSION_COOKIE
+from app.api.customer_auth import API_COOKIE_PATH, API_SESSION_COOKIE, SESSION_COOKIE
 from app.container import AppContainer
 from app.domain.audit import AuditEvent
 from app.integrations.agent_credentials import AgentCredentials
@@ -62,6 +62,37 @@ def customer_headers(customer_id: str) -> dict[str, str]:
     return {"X-Dev-Customer-Id": customer_id}
 
 
+def sign_in_browser(browser: TestClient, customer_id: str) -> None:
+    """The DEV sign-in form, exactly as a browser submits it (any link shows the form).
+
+    Afterwards the browser holds the customer's server-side session in its two path-scoped
+    cookies (pages and customer JSON API)."""
+    handoff_id, token = "hnd-sign-in", "t" * 24
+    form = browser.get(f"/customer/handoffs/{handoff_id}", params={"token": token})
+    login_csrf = re.search(r'name="login_csrf" value="([^"]*)"', form.text)
+    response = browser.post(
+        "/customer/dev-login",
+        data={
+            "customer_id": customer_id,
+            "handoff_id": handoff_id,
+            "token": token,
+            "login_csrf": login_csrf.group(1) if login_csrf else "",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303, response.text
+
+
+def api_session_secret(browser: TestClient) -> str:
+    return browser.cookies.get(API_SESSION_COOKIE, path=API_COOKIE_PATH) or ""
+
+
+def human_csrf(browser: TestClient, application_id: str) -> str:
+    """The request-human CSRF token the bank page embeds for this browser's session."""
+    secret = api_session_secret(browser)
+    return csrf_token(secret, "human", application_id) if secret else ""
+
+
 def trusted_authorization(app: FastAPI, clock: Callable[[], datetime]) -> AuthorizationService:
     """The trusted operator-side issuer (dev/test bootstrap) on the app's database."""
     factory = app.state.session_factory
@@ -95,6 +126,7 @@ class Flow:
     container: AppContainer
     engine_getter: Callable[[], object]
     _credentials: dict[str, AgentCredentials] = field(default_factory=dict)
+    _browsers: dict[str, TestClient] = field(default_factory=dict)
 
     # --- agent credentials (trusted bootstrap + the agent runtime's own token store) ---------
 
@@ -223,6 +255,15 @@ class Flow:
             },
             follow_redirects=False,
         )
+
+    def customer_browser(self, customer_id: str = "cust-1") -> TestClient:
+        """A separate browser of `customer_id`, signed in through the DEV sign-in form."""
+        browser = self._browsers.get(customer_id)
+        if browser is None:
+            browser = TestClient(self.app)
+            sign_in_browser(browser, customer_id)
+            self._browsers[customer_id] = browser
+        return browser
 
     def page_csrf(self, started: Started, client: TestClient | None = None) -> str:
         """The confirm-form CSRF token of the browser's current session (as the page has it)."""

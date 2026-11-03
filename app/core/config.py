@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     # Separate from the agent credentials above. Not digital identity verification; never
     # active in production.
     dev_customer_auth_enabled: bool = True
+    # DEV/TEST ONLY trusted operator CLI for human review (`python -m scripts.dev_operator`).
+    # Synthetic operator identities, separate from agents, customers and providers; there is
+    # NO operator HTTP endpoint. Never active in production.
+    dev_operator_cli_enabled: bool = True
 
     # Lifetimes (seconds): customer handoff challenge, onboarding grant (+ its token), agent
     # bootstrap grant, read-only status grant, customer session on the bank-controlled pages.
@@ -111,7 +115,11 @@ class Settings(BaseSettings):
                 raise ValueError("debug must be false in production")
             if "*" in self.allowed_origins:
                 raise ValueError("wildcard CORS origin is not allowed in production")
-            for flag in ("dev_agent_bootstrap_enabled", "dev_customer_auth_enabled"):
+            for flag in (
+                "dev_agent_bootstrap_enabled",
+                "dev_customer_auth_enabled",
+                "dev_operator_cli_enabled",
+            ):
                 if getattr(self, flag) and flag in self.model_fields_set:
                     raise ValueError(f"{flag} must not be set in production")
             if self.mock_provider_callback_secret is not None:
@@ -133,6 +141,10 @@ class Settings(BaseSettings):
     @property
     def dev_customer_auth_active(self) -> bool:
         return self.dev_customer_auth_enabled and self.environment is not Environment.PRODUCTION
+
+    @property
+    def dev_operator_cli_active(self) -> bool:
+        return self.dev_operator_cli_enabled and self.environment is not Environment.PRODUCTION
 
     @property
     def docs_enabled(self) -> bool:

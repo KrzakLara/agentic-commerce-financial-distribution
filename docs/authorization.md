@@ -154,3 +154,16 @@ applications usable after the schema upgrade.
 `tests/test_agent_authorization.py` (API boundary), `tests/test_authorization_service.py` (rules),
 `tests/test_applications_api.py`, `tests/test_agent_rest_integration.py`, `tests/test_recovery.py`,
 `tests/test_schema_migration.py`; targeted mutation testing: `python -m scripts.security_mutations`.
+
+## Phase 04: three separate kinds of identity
+
+| Actor | Credential | Where it is accepted |
+|---|---|---|
+| Agent | opaque bearer token (scoped, application-bound) | `/v1/applications...` only. Refused (401, audited) on every customer route, including `request-human` |
+| Customer | server-side session from the SIMULATED sign-in (hashed secret; HttpOnly, SameSite=Strict cookies `trusteq_customer_session` path `/customer` and `trusteq_customer_api` path `/v1/customer`; Secure on HTTPS; server-enforced expiry and rotation) plus a per-target CSRF token; the `X-Dev-Customer-Id` header only for the Phase 02 JSON confirmation ceremony | customer routes only; `request-human` (API and page button) requires the session AND its CSRF token for that application, and that the customer is the application's own customer (else 404) |
+| Operator | synthetic DEV identity from `DEV_OPERATORS` (`op-reviewer-1` REVIEWER, `op-supervisor-1` SUPERVISOR) | the trusted dev console only (`scripts/dev_operator.py`); there is no operator HTTP route |
+
+An operator principal is re-checked against the directory on every action (a self-promoted role
+is refused). Agent ids, agent tokens and customer secrets are never operator credentials; the
+console never echoes a value that looks like a token. Production disables the console
+(`dev_operator_cli_active`).

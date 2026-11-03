@@ -95,3 +95,18 @@ Full sequence, transitions and limitations: [onboarding-flow.md](onboarding-flow
 | `ScriptedCustomerAgent` + gateway contract | Tested with a fake gateway (Phase 00) and over REST (Phase 01) |
 | Token-level scoped mandates (issuer/audience/expiry/jti/revocation/scope/binding per request) | **Implemented in Phase 03** (controlled DEV authorization, not OAuth/FAPI) |
 | Real customer authentication (eID / EUDI wallet / bank SCA) | **Not built** - DEV simulation only |
+
+## Phase 04 additions
+
+| Component | Role |
+|---|---|
+| `app/integrations/catalog_fixture.py` | signed, versioned, expiring manifests verified against the bank's provider/partner registers and trust anchors; product terms with a terms digest; prompt-injection fixture |
+| `app/services/catalog_policy.py` | the single "only verified references, usable now" rule (`resolve_offer`) for create, handoff, confirm and submit |
+| `app/services/review_service.py` | customer request for a person, operator directory, case workflow and the fixed decision policy |
+| `app/domain/review.py`, `attribution.py`, `catalog.py` | review case + evidence, channel attribution, product terms / channel registry contracts |
+| `scripts/dev_operator.py` | trusted DEV operator console (no HTTP route) |
+| `scripts/demo_denied.py`, `scripts/demo_manual_review.py` | the DENIED and MANUAL REVIEW outcomes next to `demo_happy.py` |
+
+Dependency rules are unchanged: services depend on ports and repositories, never on FastAPI; the
+agent package still only talks to the public REST API. See
+[phase-04-traceability.md](phase-04-traceability.md).

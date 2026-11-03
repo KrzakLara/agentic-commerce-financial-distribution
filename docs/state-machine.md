@@ -131,7 +131,15 @@ state change, its audit event, the revocations at terminal states (Phase 03: boo
 onboarding grants, their tokens and any open handoff) and the flow's other writes commit
 together or not at all.
 
-## Not yet implemented
+## Human review (Phase 04) - the same machine, no second one
 
-Operator-driven transitions (leaving `MANUAL_REVIEW`, `REJECTED` decisions), customer
-`request-human` and cancellation endpoints. The rules for them exist and are tested here.
+| Transition | Driven by |
+|---|---|
+| any pausable step -> MANUAL_REVIEW | customer `request-human` (`CUSTOMER_CHANNEL`) - opens a review case that remembers the step |
+| KYC/COMPLIANCE non-PASS -> MANUAL_REVIEW | `advance_checks` opens a review case for that check attempt (`SYSTEM_POLICY`) |
+| MANUAL_REVIEW -> the remembered step | operator decision `RE_EVALUATE` (check cases: the check re-runs as a new attempt with the recorded evidence) or `RESUME` (customer cases) (`OPERATOR`) |
+| MANUAL_REVIEW -> REJECTED | operator decision `REJECT`, supervisor only (`OPERATOR`) |
+
+There is still no edge from `MANUAL_REVIEW` (or from any operator decision) to `OPENED`.
+After submission a request for a person opens a case *without* pausing (the depot provider
+decides). A cancellation endpoint is not implemented.

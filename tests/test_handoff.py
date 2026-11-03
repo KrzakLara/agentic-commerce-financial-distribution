@@ -18,6 +18,7 @@ from app.integrations.catalog_fixture import (
     FixtureProviderDiscovery,
     canonical_json,
     sha256_hex,
+    sign_manifest,
     tampered_copy,
 )
 from tests.flow import INTENT, Flow, customer_headers
@@ -36,6 +37,7 @@ def new_catalog_version() -> FixtureProviderDiscovery:
     fixture.pinned_manifest_digests["fixture-bank"] = sha256_hex(
         canonical_json(fixture.manifests["fixture-bank"])
     )
+    fixture.signatures["fixture-bank"] = sign_manifest(fixture.manifests["fixture-bank"])
     return FixtureProviderDiscovery(fixture)
 
 

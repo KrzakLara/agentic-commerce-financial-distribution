@@ -28,6 +28,10 @@ class ApprovedActionView(BaseModel):
     document_id: str
     document_version: str
     document_digest: str
+    # Phase 04: digest of the approved product terms, and the registered partner (if any) the
+    # onboarding is attributed to - both from the bank's registry, never from the agent.
+    terms_digest: str | None = None
+    partner_id: str | None = None
 
     @classmethod
     def from_domain(cls, action: ApprovedAction) -> "ApprovedActionView":

@@ -10,6 +10,7 @@ from app.services.application_service import ApplicationService
 from app.services.authorization_service import AuthorizationService
 from app.services.customer_session_service import CustomerSessionService
 from app.services.onboarding_service import OnboardingService
+from app.services.review_service import ReviewService
 
 
 def get_app_settings(request: Request) -> Settings:
@@ -86,6 +87,24 @@ def get_onboarding_service(
 
 
 OnboardingServiceDep = Annotated[OnboardingService, Depends(get_onboarding_service)]
+
+
+def get_review_service(
+    request: Request,
+    container: ContainerDep,
+    applications: ApplicationServiceDep,
+    onboarding: OnboardingServiceDep,
+) -> ReviewService:
+    session_factory = request.app.state.session_factory
+    return ReviewService(
+        lambda: SqlAlchemyUnitOfWork(session_factory),
+        applications,
+        advance_checks=onboarding.advance_checks,
+        clock=container.clock,
+    )
+
+
+ReviewServiceDep = Annotated[ReviewService, Depends(get_review_service)]
 
 
 def get_customer_session_service(

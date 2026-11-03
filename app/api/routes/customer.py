@@ -2,8 +2,12 @@
 
 * ``POST /v1/customer/handoffs/{id}/confirm`` - the JSON ceremony from ADR section 05 (DEV
   customer context: ``X-Dev-Customer-Id``).
+* ``POST /v1/customer/applications/{id}/request-human`` - the customer asks for a person
+  (Phase 04): requires the customer's SERVER-SIDE session (cookie ``trusteq_customer_api``) and
+  its CSRF token (``X-CSRF-Token``); the self-asserted DEV header is not accepted here.
 * ``/customer/...`` - the minimal HTML pages a customer actually sees (not part of the OpenAPI
-  contract), with a server-side session and CSRF tokens (Phase 03).
+  contract), with a server-side session and CSRF tokens (Phase 03), including the "Mit einer
+  Person sprechen" button (``POST /customer/applications/{id}/request-human``, Phase 04).
 
 None of these routes accepts an agent credential: a request carrying an ``Authorization``
 header is refused (and audited), whatever else it carries. Possessing the handoff link (or its
@@ -14,18 +18,22 @@ import re
 from typing import Annotated
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Depends, Path, Request, status
+from fastapi import APIRouter, Depends, Header, Path, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import APIKeyHeader
 
 from app.api import pages
 from app.api.customer_auth import (
+    API_SESSION_COOKIE,
     COOKIE_PATH,
+    CSRF_HEADER,
     DEV_CUSTOMER_HEADER,
     LOGIN_COOKIE,
     LOGIN_COOKIE_MAX_AGE,
     SESSION_COOKIE,
+    SESSION_COOKIES,
+    CustomerContext,
     agent_credentials_presented,
     cookie_is_secure,
     header_customer,
@@ -38,31 +46,43 @@ from app.api.deps import (
     CorrelationIdDep,
     CustomerSessionServiceDep,
     OnboardingServiceDep,
+    ReviewServiceDep,
     SettingsDep,
 )
 from app.api.schemas.errors import ErrorResponse
 from app.api.schemas.handoffs import HandoffConfirmRequest, HandoffConfirmResponse
-from app.core.exceptions import AppError, AuthenticationRequiredError
-from app.domain.enums import AuditActorType
+from app.api.schemas.review import HumanRequestBody, HumanRequestResponse
+from app.core.config import Settings
+from app.core.exceptions import (
+    AppError,
+    AuthenticationRequiredError,
+    CrossSiteRequestError,
+    CsrfTokenInvalidError,
+)
+from app.domain.enums import AuditActorType, HumanRequestCategory
 from app.domain.visibility import to_agent_visible_state
 from app.services.authorization_service import AuthorizationService
 from app.services.customer_session_service import (
+    CustomerSessionService,
     csrf_matches,
     csrf_token,
     is_pre_session_secret,
     new_pre_session_secret,
 )
 from app.services.onboarding_service import OnboardingService
+from app.services.review_service import ReviewService
 
 router = APIRouter(tags=["customer"])
 
 HandoffId = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_\-]+$")]
+ApplicationId = Annotated[str, Path(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_\-]+$")]
 _TOKEN = re.compile(r"^[A-Za-z0-9_\-]{16,128}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _HANDOFF_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 _MAX_FORM_BYTES = 4096
 CSRF_CONFIRM = "confirm"
 CSRF_LOGIN = "login"
+CSRF_HUMAN = "human"  # bound to (session, application)
 
 _dev_customer_header = APIKeyHeader(
     name=DEV_CUSTOMER_HEADER,
@@ -75,6 +95,13 @@ _dev_customer_header = APIKeyHeader(
 )
 
 
+def _presented_agent_id(request: Request, authorization: AuthorizationService) -> str | None:
+    """Which agent (if any) the presented bearer token belongs to - for the audit trail only."""
+    header = request.headers.get("authorization") or ""
+    scheme, _, raw = header.partition(" ")
+    return authorization.identify_agent(raw.strip()) if scheme.lower() == "bearer" else None
+
+
 def _refuse_agent_credentials(
     request: Request,
     handoff_id: str,
@@ -83,13 +110,10 @@ def _refuse_agent_credentials(
     correlation_id: str,
 ) -> None:
     """Audit an agent credential presented to the customer channel (e.g. self-approval)."""
-    header = request.headers.get("authorization") or ""
-    scheme, _, raw = header.partition(" ")
-    agent_id = authorization.identify_agent(raw.strip()) if scheme.lower() == "bearer" else None
     service.record_customer_channel_denial(
         handoff_id=handoff_id,
         actor_type=AuditActorType.AGENT,
-        actor_id=agent_id,
+        actor_id=_presented_agent_id(request, authorization),
         reason="agent_credentials_presented",
         correlation_id=correlation_id,
     )
@@ -140,6 +164,116 @@ def confirm_handoff(
         application_id=application.application_id,
         state=to_agent_visible_state(application.status),
     )
+
+
+def _human_request_customer(
+    request: Request,
+    application_id: str,
+    *,
+    settings: Settings,
+    sessions: CustomerSessionService,
+    reviews: ReviewService,
+    authorization: AuthorizationService,
+    correlation_id: str,
+    cookie: str,
+    presented_csrf: str | None,
+) -> CustomerContext:
+    """The ONE gate of both request-human routes (customer JSON API and the page button).
+
+    In order: no agent credential; not a cross-site browser request; an ACTIVE server-side
+    customer session (the server decides expiry and revocation); a CSRF token bound to this
+    session AND this application. Every refusal is audited with a machine reason only. The
+    self-asserted DEV customer header is never a credential here. Which customer may act on
+    which application is decided afterwards by `ReviewService.request_human` (404 otherwise).
+    """
+
+    def deny(actor_type: AuditActorType, actor_id: str | None, reason: str) -> None:
+        reviews.record_request_denial(
+            application_id=application_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            reason=reason,
+            correlation_id=correlation_id,
+        )
+
+    if agent_credentials_presented(request):
+        deny(
+            AuditActorType.AGENT,
+            _presented_agent_id(request, authorization),
+            "agent_credentials_presented",
+        )
+        raise AuthenticationRequiredError()
+    if _cross_site(request):
+        deny(AuditActorType.CUSTOMER, None, "cross_site_request")
+        raise CrossSiteRequestError()
+    customer = session_customer(request, settings, sessions, cookie)
+    if customer is None or customer.session_secret is None:
+        deny(AuditActorType.CUSTOMER, None, "no_customer_session")  # missing/expired/revoked
+        raise AuthenticationRequiredError()
+    if not csrf_matches(customer.session_secret, CSRF_HUMAN, application_id, presented_csrf):
+        deny(AuditActorType.CUSTOMER, customer.customer_id, "csrf_token_invalid")
+        raise CsrfTokenInvalidError()
+    return customer
+
+
+@router.post(
+    "/v1/customer/applications/{application_id}/request-human",
+    response_model=HumanRequestResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Customer asks to speak with a person (bank-controlled customer channel)",
+    description=(
+        "Requires the customer's server-side session (HttpOnly cookie `trusteq_customer_api`, "
+        "set by the bank's - in this prototype SIMULATED - sign-in) and the session's CSRF token "
+        "for this application in the `X-CSRF-Token` header. The self-asserted "
+        "`X-Dev-Customer-Id` header is not accepted; agent credentials are refused and audited. "
+        "Only the application's own customer may ask (404 otherwise). Opens - or joins - the "
+        "application's single review case and, where possible, pauses the workflow at its "
+        "current step. The acknowledgement is generic: it never reveals review reasons or check "
+        "results."
+    ),
+    responses={
+        401: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+    },
+)
+def request_human(
+    application_id: ApplicationId,
+    body: HumanRequestBody,
+    request: Request,
+    response: Response,
+    settings: SettingsDep,
+    reviews: ReviewServiceDep,
+    sessions: CustomerSessionServiceDep,
+    authorization: AuthorizationServiceDep,
+    correlation_id: CorrelationIdDep,
+    csrf_header: Annotated[
+        str | None,
+        Header(
+            alias=CSRF_HEADER,
+            description="The session's CSRF token for this application (from the bank page).",
+        ),
+    ] = None,
+) -> HumanRequestResponse:
+    customer = _human_request_customer(
+        request,
+        application_id,
+        settings=settings,
+        sessions=sessions,
+        reviews=reviews,
+        authorization=authorization,
+        correlation_id=correlation_id,
+        cookie=API_SESSION_COOKIE,
+        presented_csrf=csrf_header,
+    )
+    ack = reviews.request_human(
+        customer_id=customer.customer_id,
+        application_id=application_id,
+        category=body.category,
+        correlation_id=correlation_id,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return HumanRequestResponse(application_id=ack.application_id, message=ack.message)
 
 
 # --- HTML pages ---------------------------------------------------------------------------------
@@ -253,6 +387,9 @@ def handoff_page(
             product_name=product.name,
             channel_label=channel.label,
             csrf_token=csrf_token(customer.session_secret, CSRF_CONFIRM, handoff_id),
+            product=product,
+            channel=channel,
+            human_csrf_token=csrf_token(customer.session_secret, CSRF_HUMAN, action.application_id),
         )
     )
 
@@ -293,15 +430,16 @@ async def dev_login(
     response = RedirectResponse(
         f"/customer/handoffs/{handoff_id}?token={token}", status_code=status.HTTP_303_SEE_OTHER
     )
-    response.set_cookie(
-        SESSION_COOKIE,
-        secret,
-        max_age=settings.customer_session_ttl_seconds,
-        httponly=True,
-        samesite="strict",
-        secure=cookie_is_secure(request),
-        path=COOKIE_PATH,
-    )
+    for name, path in SESSION_COOKIES:  # the pages and the customer JSON API: one session
+        response.set_cookie(
+            name,
+            secret,
+            max_age=settings.customer_session_ttl_seconds,
+            httponly=True,
+            samesite="strict",
+            secure=cookie_is_secure(request),
+            path=path,
+        )
     response.delete_cookie(LOGIN_COOKIE, path=COOKIE_PATH)
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -352,10 +490,58 @@ async def confirm_handoff_form(
         )
     except AppError as exc:
         return _error_page(exc, "Confirmation failed")
-    return _page(
+    page = pages.result_page(
         "Confirmation recorded",
         f"Thank you. Your confirmation for application {application.application_id} was "
         "recorded. The mandatory checks (MOCK) have run; the agent can now continue.",
-        200,
         ok=True,
+        human_request=(
+            application.application_id,
+            csrf_token(customer.session_secret, CSRF_HUMAN, application.application_id),
+        ),
     )
+    return pages.html_response(page, 200)
+
+
+@router.post("/customer/applications/{application_id}/request-human", include_in_schema=False)
+async def request_human_form(
+    application_id: ApplicationId,
+    request: Request,
+    settings: SettingsDep,
+    reviews: ReviewServiceDep,
+    sessions: CustomerSessionServiceDep,
+    authorization: AuthorizationServiceDep,
+    correlation_id: CorrelationIdDep,
+) -> HTMLResponse:
+    """The "Mit einer Person sprechen" button: the page session + its CSRF form field, through
+    the same gate and workflow as the JSON route; answers with the same neutral text."""
+    form = await _read_form(request)
+    try:
+        customer = await run_in_threadpool(
+            lambda: _human_request_customer(
+                request,
+                application_id,
+                settings=settings,
+                sessions=sessions,
+                reviews=reviews,
+                authorization=authorization,
+                correlation_id=correlation_id,
+                cookie=SESSION_COOKIE,
+                presented_csrf=form.get("csrf_token"),
+            )
+        )
+        try:
+            category = HumanRequestCategory(form.get("category", ""))
+        except ValueError:
+            return _page("Rejected", "Invalid request.", 400)
+        ack = await run_in_threadpool(
+            lambda: reviews.request_human(
+                customer_id=customer.customer_id,
+                application_id=application_id,
+                category=category,
+                correlation_id=correlation_id,
+            )
+        )
+    except AppError as exc:
+        return _error_page(exc, "Request not possible")
+    return pages.html_response(pages.human_request_ack_page(ack.message), 200)

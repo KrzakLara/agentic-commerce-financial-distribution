@@ -18,12 +18,14 @@ from app.domain.idempotency import IdempotencyRecord
 from app.repositories.orm import ApplicationRow, AuditEventRow, IdempotencyRecordRow
 from app.repositories.workflow_repositories import (
     SqlAlchemyAgentTokenRepository,
+    SqlAlchemyChannelAttributionRepository,
     SqlAlchemyCheckRepository,
     SqlAlchemyCustomerSessionRepository,
     SqlAlchemyDepotSubmissionRepository,
     SqlAlchemyHandoffRepository,
     SqlAlchemyMandateRepository,
     SqlAlchemyReceiptRepository,
+    SqlAlchemyReviewCaseRepository,
 )
 
 
@@ -200,6 +202,8 @@ class SqlAlchemyUnitOfWork:
         self.handoffs = SqlAlchemyHandoffRepository(self._session)
         self.receipts = SqlAlchemyReceiptRepository(self._session)
         self.checks = SqlAlchemyCheckRepository(self._session)
+        self.review_cases = SqlAlchemyReviewCaseRepository(self._session)
+        self.attributions = SqlAlchemyChannelAttributionRepository(self._session)
         self.depot_submissions = SqlAlchemyDepotSubmissionRepository(self._session)
         return self
 

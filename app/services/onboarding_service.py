@@ -45,6 +45,7 @@ from app.core.exceptions import (
     UnverifiedReferenceError,
 )
 from app.domain.application import DepotApplication
+from app.domain.attribution import ChannelAttribution
 from app.domain.base import DomainModel, OpaqueId
 from app.domain.checks import CheckRecord, DepotSubmissionRecord
 from app.domain.enums import (
@@ -56,10 +57,15 @@ from app.domain.enums import (
     CheckOutcome,
     CheckType,
     MandateScope,
+    ReviewCaseReason,
+    ReviewCaseStatus,
+    ReviewDecision,
+    ReviewEvidenceCategory,
 )
 from app.domain.handoff import ApprovedAction, Handoff
 from app.domain.mandate import Mandate
 from app.domain.receipts import ConsentReceipt, DisclosureReceipt
+from app.domain.review import ManualReviewCase
 from app.domain.workflow import TransitionAuthority as A
 from app.domain.workflow import check_transition
 from app.integrations.ports import (
@@ -72,6 +78,7 @@ from app.integrations.ports import (
 from app.repositories.interfaces import UnitOfWork
 from app.services.application_service import ApplicationService
 from app.services.authorization_service import AgentPrincipal
+from app.services.catalog_policy import VerifiedOffer, resolve_offer
 from app.services.policy import (
     PolicyDecision,
     evaluate_handoff_request,
@@ -132,6 +139,15 @@ class ProviderConfirmationResult:
 
 def _hash_nonce(nonce: str) -> str:
     return hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+
+
+def check_case_reason(check: CheckType, outcome: CheckOutcome) -> ReviewCaseReason:
+    """Internal case reason for a check that did not pass (never shown to agent or customer)."""
+    if outcome is CheckOutcome.FAIL:
+        return ReviewCaseReason.CHECK_FAILED
+    if check is CheckType.KYC:
+        return ReviewCaseReason.KYC_REVIEW_REQUIRED
+    return ReviewCaseReason.COMPLIANCE_REVIEW_REQUIRED
 
 
 class OnboardingService:
@@ -196,18 +212,26 @@ class OnboardingService:
         uow.commit()
         return error
 
-    def _approved_action(self, application: DepotApplication) -> ApprovedAction:
-        """Build the action from the VERIFIED catalog (never from agent-supplied text)."""
-        try:
-            products = {
-                p.product_id: p for p in self._catalog.list_products(application.provider_id)
-            }
-            channels = {c.channel_id for c in self._catalog.list_channels(application.provider_id)}
-        except NotFoundError:
-            raise UnverifiedReferenceError() from None
-        product = products.get(application.product_id)
-        if product is None or application.channel_id not in channels:
-            raise UnverifiedReferenceError()
+    def _offer(self, application: DepotApplication) -> VerifiedOffer:
+        return resolve_offer(
+            self._catalog,
+            provider_id=application.provider_id,
+            product_id=application.product_id,
+            channel_id=application.channel_id,
+            now=self._clock(),
+        )
+
+    def _approved_action(
+        self, application: DepotApplication, offer: VerifiedOffer | None = None
+    ) -> ApprovedAction:
+        """Build the action from the VERIFIED catalog (never from agent-supplied text).
+
+        Phase 04: it also binds the exact product terms (`terms_digest`) and the partner the
+        registry attributes this channel to - so changed terms, a changed disclosure or a
+        changed attribution make an earlier approval stale.
+        """
+        offer = offer or self._offer(application)
+        product = offer.product
         return ApprovedAction(
             application_id=application.application_id,
             provider_id=application.provider_id,
@@ -218,7 +242,22 @@ class OnboardingService:
             document_id=product.risk_document_id,
             document_version=product.risk_document_version,
             document_digest=product.risk_document_digest,
+            terms_digest=product.terms_digest,
+            partner_id=offer.channel.partner_id,
         )
+
+    def _still_current(self, application: DepotApplication, handoff: Handoff) -> bool:
+        """Is the action the customer approved still exactly what the live catalog offers?
+
+        Approvals given before Phase 04 did not cover terms and partner; they are compared on
+        the fields they did cover (their digest was computed without them)."""
+        try:
+            current = self._approved_action(application)
+        except UnverifiedReferenceError:
+            return False  # expired manifest, withdrawn product, ended partnership ...
+        if handoff.action.terms_digest is None and handoff.action.partner_id is None:
+            current = current.model_copy(update={"terms_digest": None, "partner_id": None})
+        return hmac.compare_digest(current.digest(), handoff.action_digest)
 
     # --- 1. agent requests a customer handoff ------------------------------------------------
 
@@ -445,14 +484,24 @@ class OnboardingService:
                 raise deny(MandateInactiveError(), "mandate_inactive")
             if not hmac.compare_digest(action_digest, handoff.action_digest):
                 raise deny(ActionDigestMismatchError(), "presented_digest_differs")
-            # The catalog may have changed since the handoff was issued: re-derive the action
-            # and refuse if the customer would approve something that is no longer current.
-            if self._approved_action(application).digest() != handoff.action_digest:
+            # The catalog may have changed since the handoff was issued (terms, disclosure
+            # version, channel/partner, manifest validity): re-derive the action from the live
+            # catalog and refuse if the customer would approve something no longer current.
+            try:
+                offer: VerifiedOffer | None = self._offer(application)
+            except UnverifiedReferenceError:
+                offer = None
+            if (
+                offer is None
+                or self._approved_action(application, offer).digest() != handoff.action_digest
+            ):
                 raise deny(ActionDigestMismatchError(), "action_no_longer_current")
             if not uow.handoffs.consume(handoff_id, customer_id, now):
                 raise deny(HandoffNotActiveError(), "lost_race_or_reused")
 
             action = handoff.action
+            # Disclosure evidence bound to application, customer, provider, product (version
+            # and terms), the exact document version and the approved action digest.
             uow.receipts.add_disclosure(
                 DisclosureReceipt(
                     receipt_id=f"dsc-{self._id_factory()}",
@@ -462,16 +511,33 @@ class OnboardingService:
                     document_version=action.document_version,
                     document_digest=action.document_digest,
                     acknowledged_at=now,
+                    provider_id=action.provider_id,
+                    product_id=action.product_id,
+                    product_version=action.catalog_version,
+                    terms_digest=action.terms_digest,
+                    action_digest=handoff.action_digest,
                 )
             )
-            uow.receipts.add_consent(
-                ConsentReceipt(
-                    receipt_id=f"cns-{self._id_factory()}",
+            consent = ConsentReceipt(
+                receipt_id=f"cns-{self._id_factory()}",
+                application_id=application.application_id,
+                customer_id=customer_id,
+                handoff_id=handoff_id,
+                action_digest=handoff.action_digest,
+                confirmed_at=now,
+            )
+            uow.receipts.add_consent(consent)
+            # The verified distribution attribution, from the registry, fixed with the consent.
+            uow.attributions.add(
+                ChannelAttribution(
                     application_id=application.application_id,
-                    customer_id=customer_id,
-                    handoff_id=handoff_id,
-                    action_digest=handoff.action_digest,
-                    confirmed_at=now,
+                    provider_id=application.provider_id,
+                    channel_id=offer.channel.channel_id,
+                    channel_kind=offer.channel.kind,
+                    partner_id=offer.channel.partner_id,
+                    registry_version=offer.provider.manifest_digest,
+                    consent_receipt_id=consent.receipt_id,
+                    recorded_at=now,
                 )
             )
             self._apps.apply_transition(
@@ -495,6 +561,9 @@ class OnboardingService:
                         "handoff_id": handoff_id,
                         "action_digest": handoff.action_digest,
                         "document_version": action.document_version,
+                        "terms_digest": action.terms_digest,
+                        "channel_kind": offer.channel.kind.value,
+                        "partner_id": offer.channel.partner_id,
                     },
                 )
             )
@@ -549,31 +618,152 @@ class OnboardingService:
         )
         uow.commit()
 
+    @staticmethod
+    def _authorized_re_evaluation(
+        uow: UnitOfWork, application_id: str, check: CheckType, latest: CheckRecord
+    ) -> tuple[ReviewEvidenceCategory, ...] | None:
+        """Evidence for a new attempt, if an operator closed the review of exactly the latest
+        attempt with RE_EVALUATE; otherwise None (the recorded result stands)."""
+        for case in uow.review_cases.list_for_application(application_id):
+            if (
+                case.check_type is check
+                and case.check_attempt == latest.attempt
+                and case.resolution is ReviewDecision.RE_EVALUATE
+            ):
+                return tuple(item.category for item in case.evidence)
+        return None
+
     def _run_check(
         self, uow: UnitOfWork, application: DepotApplication, check: CheckType, cid: str
     ) -> None:
-        record = uow.checks.get(application.application_id, check)
-        if record is None:
-            result = (
-                self._kyc.verify_identity(application)
-                if check is CheckType.KYC
-                else self._compliance.assess(application)
-            )
+        """Run (or reuse) one mandatory check, then advance or park the application.
+
+        A provider is called only if no result is recorded yet, or if an operator authorized a
+        re-evaluation of the latest attempt (Phase 04): then attempt n+1 is called WITH the
+        recorded review evidence and its result decides - nobody sets an outcome by hand.
+        """
+        app_id = application.application_id
+        record = uow.checks.get(app_id, check)
+        evidence = (
+            None if record is None else self._authorized_re_evaluation(uow, app_id, check, record)
+        )
+        if record is None or evidence is not None:
+            if evidence is None:  # first attempt: the original call, without review evidence
+                result = (
+                    self._kyc.verify_identity(application)
+                    if check is CheckType.KYC
+                    else self._compliance.assess(application)
+                )
+            else:
+                result = (
+                    self._kyc.verify_identity(application, evidence=evidence)
+                    if check is CheckType.KYC
+                    else self._compliance.assess(application, evidence=evidence)
+                )
             record = CheckRecord(
-                application_id=application.application_id,
+                application_id=app_id,
                 check_type=check,
                 outcome=result.outcome,
                 reference=result.reference,
                 mock=result.mock,
                 created_at=self._clock(),
+                attempt=1 if record is None else record.attempt + 1,
             )
-            uow.checks.add(record)
+            uow.checks.add(record)  # UNIQUE(application, check, attempt): no double attempt
+            if record.attempt > 1:
+                uow.audit.append(
+                    self._apps.new_event(
+                        event_type="check.re_evaluated",
+                        correlation_id=cid,
+                        actor_type=AuditActorType.SYSTEM,
+                        actor_id=None,
+                        outcome=AuditOutcome.SUCCESS,
+                        application_id=app_id,
+                        details={"check_type": check.value, "attempt": record.attempt},
+                    )
+                )
         if record.outcome is CheckOutcome.PASS:
             target = S.COMPLIANCE_PENDING if check is CheckType.KYC else S.CONTRACT_PENDING
             reason = f"{check.value.lower()}_passed"
         else:
             target, reason = S.MANUAL_REVIEW, f"{check.value.lower()}_not_passed"
+            self._open_check_review(uow, application, check, record, cid)
         self._step(uow, application, target, reason, cid)
+
+    def _open_check_review(
+        self,
+        uow: UnitOfWork,
+        application: DepotApplication,
+        check: CheckType,
+        record: CheckRecord,
+        cid: str,
+    ) -> None:
+        """A check that did not pass parks the application WITH a durable review case.
+
+        One active case per application: if the case for exactly this attempt is still open
+        (the step was re-entered without a review decision), it is kept. Any other open case
+        cannot hold this pause (its interrupted step is fixed), so it is closed as superseded
+        - recorded in the audit trail - before the new case is opened.
+        """
+        app_id = application.application_id
+        active = uow.review_cases.get_active_for_application(app_id)
+        if active is not None:
+            if (
+                active.check_type is check
+                and active.check_attempt == record.attempt
+                and active.interrupted_step is application.status
+            ):
+                return
+            now = self._clock()
+            superseded = active.model_copy(
+                update={
+                    "status": ReviewCaseStatus.CLOSED,
+                    "resolution": ReviewDecision.ACKNOWLEDGE,
+                    "resolved_by": "system",
+                    "resolved_at": now,
+                }
+            )
+            if not uow.review_cases.update(superseded, expected_version=active.version, at=now):
+                raise ConcurrentModificationError()
+            uow.audit.append(
+                self._apps.new_event(
+                    event_type="review.case_superseded",
+                    correlation_id=cid,
+                    actor_type=AuditActorType.SYSTEM,
+                    actor_id=None,
+                    outcome=AuditOutcome.SUCCESS,
+                    application_id=app_id,
+                    details={"case_id": active.case_id, "reason": active.reason.value},
+                )
+            )
+        case = ManualReviewCase(
+            case_id=f"rvw-{self._id_factory()}",
+            application_id=application.application_id,
+            reason=check_case_reason(check, record.outcome),
+            check_type=check,
+            check_attempt=record.attempt,
+            interrupted_step=application.status,
+            opened_by=AuditActorType.SYSTEM,
+            created_at=self._clock(),
+        )
+        uow.review_cases.add(case)  # at most one active case per application (DB-enforced)
+        uow.audit.append(
+            self._apps.new_event(
+                event_type="review.case_opened",
+                correlation_id=cid,
+                actor_type=AuditActorType.SYSTEM,
+                actor_id=None,
+                outcome=AuditOutcome.SUCCESS,
+                application_id=application.application_id,
+                details={
+                    "case_id": case.case_id,
+                    "reason": case.reason.value,
+                    "check_type": check.value,
+                    "attempt": record.attempt,
+                    "interrupted_step": application.status.value,
+                },
+            )
+        )
 
     def _record_contract(self, uow: UnitOfWork, application: DepotApplication, cid: str) -> None:
         if uow.checks.get(application.application_id, CheckType.CONTRACT) is not None:
@@ -702,6 +892,13 @@ class OnboardingService:
                 compliance=uow.checks.get(application_id, CheckType.COMPLIANCE),
                 contract=uow.checks.get(application_id, CheckType.CONTRACT),
             )
+            if decision.allowed and (
+                handoff is None or not self._still_current(application, handoff)
+            ):
+                # Phase 04: the approval covers exact terms, disclosure and attribution. If the
+                # live catalog no longer offers exactly that (changed terms, expired manifest,
+                # ended partnership), the old approval cannot be used to submit.
+                decision = PolicyDecision(("approved_action_current",))
             if not decision.allowed:
                 # The precise reason is audited; the agent only gets a generic refusal.
                 raise self._deny(
