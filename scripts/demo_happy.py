@@ -335,7 +335,7 @@ def run(keep: bool, restart: bool) -> None:  # noqa: C901 - a linear, narrated s
         link = f"/customer/handoffs/{handoff_id}"
         anonymous = customer_http.get(link, params={"token": nonce})
         expect(
-            "Sign in" in anonymous.text and "Beispielbank" not in anonymous.text,
+            "Sign in" in anonymous.text and "Example Depot Bank" not in anonymous.text,
             "link alone must show no details",
         )
         tl.say(
@@ -364,9 +364,9 @@ def run(keep: bool, restart: bool) -> None:  # noqa: C901 - a linear, narrated s
         page = customer_http.get(link, params={"token": nonce})
         expect(page.status_code == 200, f"review page: {page.status_code}")
         shown = {
-            "provider": "Beispielbank Depot AG (MOCK)",
-            "product": "Wertpapierdepot Basis (MOCK)",
-            "channel": "Direktvertrieb (MOCK)",
+            "provider": "Example Depot Bank AG (MOCK)",
+            "product": "Basic Securities Account (MOCK)",
+            "channel": "Direct sales (MOCK)",
             "application": app_id,
             "disclosure version": "<strong>1.0</strong>",
             "confirm button": "Confirm and authorize",

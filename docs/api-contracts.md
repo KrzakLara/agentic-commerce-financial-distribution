@@ -193,7 +193,7 @@ sets `OPENED`.
   do not serve the product and expired providers with `422 unverified_reference`; unknown body
   fields such as `partner_id` or `commission_recipient` with `422 validation_error`.
 * **request-human** needs the customer's session and CSRF token (see
-  [onboarding-flow.md](onboarding-flow.md#asking-for-a-person-the-mit-einer-person-sprechen-button)).
+  [onboarding-flow.md](onboarding-flow.md#asking-for-a-person-the-speak-to-a-person-button)).
   Example: `POST /v1/customer/applications/app-.../request-human` with the session cookie and
   `X-CSRF-Token: <token from the bank page>`, body `{"category": "QUESTION_ABOUT_PRODUCT"}`.
   Response (always the same shape):

@@ -43,7 +43,7 @@ def test_manifest_endpoint_returns_verified_fixture_metadata(client: TestClient)
     assert response.status_code == 200
     body = response.json()
     assert body["provider_id"] == "fixture-bank"
-    assert body["legal_name"] == "Beispielbank Depot AG (MOCK)"
+    assert body["legal_name"] == "Example Depot Bank AG (MOCK)"
     assert body["role"] == "DEPOT_PROVIDER" and body["is_mock"] is True
     assert body["manifest_digest"] == sha256_hex(
         canonical_json(DEFAULT_FIXTURE.manifests["fixture-bank"])

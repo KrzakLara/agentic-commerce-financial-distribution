@@ -6,8 +6,8 @@
   (Phase 04): requires the customer's SERVER-SIDE session (cookie ``trusteq_customer_api``) and
   its CSRF token (``X-CSRF-Token``); the self-asserted DEV header is not accepted here.
 * ``/customer/...`` - the minimal HTML pages a customer actually sees (not part of the OpenAPI
-  contract), with a server-side session and CSRF tokens (Phase 03), including the "Mit einer
-  Person sprechen" button (``POST /customer/applications/{id}/request-human``, Phase 04).
+  contract), with a server-side session and CSRF tokens (Phase 03), including the "Speak to a
+  person" button (``POST /customer/applications/{id}/request-human``, Phase 04).
 
 None of these routes accepts an agent credential: a request carrying an ``Authorization``
 header is refused (and audited), whatever else it carries. Possessing the handoff link (or its
@@ -513,7 +513,7 @@ async def request_human_form(
     authorization: AuthorizationServiceDep,
     correlation_id: CorrelationIdDep,
 ) -> HTMLResponse:
-    """The "Mit einer Person sprechen" button: the page session + its CSRF form field, through
+    """The "Speak to a person" button: the page session + its CSRF form field, through
     the same gate and workflow as the JSON route; answers with the same neutral text."""
     form = await _read_form(request)
     try:

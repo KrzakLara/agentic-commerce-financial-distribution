@@ -339,7 +339,7 @@ def catalog_attacks() -> list[tuple[str, CatalogFixture, dict[str, object]]]:
         ("signed manifest, older (stale) version", signed({"manifest_version": "2026-10-01"}), {})
     )
     attacks.append(
-        ("signed manifest, expired", signed({"expires_at": "2026-11-02T00:00:00+00:00"}), {})
+        ("signed manifest, expired", signed({"expires_at": "2026-11-03T01:00:00+00:00"}), {})
     )
 
     fake = catalog_fixture.tampered_copy()  # copies name, LEI and domain of the real provider

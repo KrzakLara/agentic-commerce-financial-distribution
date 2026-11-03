@@ -1,5 +1,5 @@
 """Phase 04 finalization: asking for a person needs the customer's SERVER-SIDE session and its
-CSRF token - on the JSON API and on the "Mit einer Person sprechen" button - never a
+CSRF token - on the JSON API and on the "Speak to a person" button - never a
 self-asserted header and never an agent token. Nothing about internal reviews leaks, and the
 request cannot move an application past a mandatory check."""
 
@@ -50,7 +50,7 @@ def press_button(  # noqa: ANN201
 
 
 def page_human_csrf(page_html: str, app_id: str) -> str:
-    """The CSRF token inside the page's "Mit einer Person sprechen" form."""
+    """The CSRF token inside the page's "Speak to a person" form."""
     match = re.search(
         rf'action="/customer/applications/{re.escape(app_id)}/request-human">'
         r'<input type="hidden" name="csrf_token" value="([^"]+)">',
@@ -227,7 +227,7 @@ def test_the_api_session_cookie_is_httponly_samesite_strict_scoped_and_expiring(
         assert same_secret  # one server-side session behind both cookies
 
 
-# --- the "Mit einer Person sprechen" button ----------------------------------------------------
+# --- the "Speak to a person" button ----------------------------------------------------
 
 
 def test_the_review_page_shows_the_button_to_the_signed_in_customer_only(flow: Flow) -> None:
@@ -250,7 +250,7 @@ def test_pressing_the_button_opens_a_case_with_a_neutral_acknowledgement(flow: F
     flow.page_sign_in(started)
     csrf = page_human_csrf(review_page(flow, started).text, started.application_id)
     response = press_button(flow.customer_http, started.application_id, csrf)
-    assert response.status_code == 200 and "Anfrage erhalten" in response.text
+    assert response.status_code == 200 and "Request received" in response.text
     assert response.headers["cache-control"] == "no-store"
     assert cases(flow, started.application_id) == [
         ("CUSTOMER_REQUESTED_HUMAN", "OPEN", "AWAITING_AUTHORIZATION")
@@ -281,7 +281,7 @@ def test_the_button_needs_the_session_and_its_csrf_token(flow: Flow, probe: str)
         headers, status = flow.onboarding_headers(app_id), 401
     response = press_button(client, app_id, sent, **headers)
     assert response.status_code == status
-    assert "Anfrage erhalten" not in response.text
+    assert "Request received" not in response.text
     assert cases(flow, app_id) == [] and flow.status_of(app_id) == "AWAITING_AUTHORIZATION"
 
 

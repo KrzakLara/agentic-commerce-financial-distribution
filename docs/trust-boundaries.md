@@ -87,7 +87,7 @@ Phase 03 replaced the `X-Dev-Actor-Id` header described below with bearer tokens
   scopes or the tool registry. A hostile text cannot add a tool, change a state, widen a scope or
   rename a provider (prompt-injection fixture tests).
 * **Human review stays inside T2.** Operators act through a trusted console, not over HTTP; the
-  customer's request ("Mit einer Person sprechen") crosses T0a -> T1 only on the customer's own
+  customer's request ("Speak to a person") crosses T0a -> T1 only on the customer's own
   server-side session with a CSRF token bound to that session and application - a
   self-asserted customer id is not accepted, agent credentials are refused (audited). Internal review reasons, evidence and decisions never cross to T0a/T0b:
   the customer gets a generic acknowledgement, the agent the coarse state `ACTION_REQUIRED`.

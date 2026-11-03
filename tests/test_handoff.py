@@ -344,7 +344,12 @@ def test_link_alone_is_not_authentication_the_page_shows_nothing_without_sign_in
     )
     assert page.status_code == 200
     assert "Sign in" in page.text
-    for detail in ("Beispielbank", "depot-basic", started.application_id, started.action_digest):
+    for detail in (
+        "Example Depot Bank",
+        "depot-basic",
+        started.application_id,
+        started.action_digest,
+    ):
         assert detail not in page.text  # nothing about the request is revealed to an unknown viewer
     assert flow.status_of(started.application_id) == "AWAITING_AUTHORIZATION"
 

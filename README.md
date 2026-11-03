@@ -6,7 +6,7 @@ A modular-monolith FastAPI project for the TRUSTEQ GmbH AI Engineering case stud
 Provider manifests are signed, versioned and expiring and are verified against the bank's own
 register (identity, domain, endpoint, capabilities, channels, no rollback); product terms and the
 attributed partner are bound into what the customer approves, so changed terms invalidate an old
-approval; a customer can ask for a person with the **"Mit einer Person sprechen"** button
+approval; a customer can ask for a person with the **"Speak to a person"** button
 (server-side customer session + CSRF), a synthetic compliance `REVIEW_REQUIRED` opens a durable
 review case, and a bank operator can re-evaluate with evidence - never override. The **P0 core is
 frozen** ([docs/phase-04-traceability.md](docs/phase-04-traceability.md#p0-core-freeze)). Three
@@ -25,7 +25,7 @@ persistence, state machine, end-to-end flow, scoped agent authorization) are com
 A German fund provider wants AI agents to discover its products and start a securities-account
 (Wertpapierdepot) onboarding. The case study asks for a trustworthy, compliant, maintainable
 architecture plus a minimum convincing prototype. The approved decision is
-**ADR-001 v1.1 - L3 controlled agentic onboarding**:
+**ADR-001 v1.1 - L3 controlled agentic onboarding** (see the German terms below):
 
 > *LLM proposes; policy decides; customer authorizes; bank executes.*
 
@@ -35,6 +35,24 @@ contract or mark a depot `OPENED`.
 
 Architecture sources (not modified by this project): `TRUSTEQ_ADR_v1.1_FINAL.docx` and
 `TRUSTEQ_IMPLEMENTATION_PHASES_v2.md`.
+
+### German terms kept in this English prototype
+
+The case study is set in the German market. These German legal and industry terms are kept on
+purpose, each with its meaning:
+
+| Term | Meaning |
+|---|---|
+| Wertpapierdepot | securities account (custody account for securities) - what the onboarding opens |
+| Hausbank | the customer's relationship bank; here: a registered partner bank that distributes the account |
+| AG / eG / GmbH | German legal forms: stock corporation / registered cooperative / limited liability company |
+| KVG (Kapitalverwaltungsgesellschaft) | German investment management company under the KAGB (German Investment Code) |
+| BaFin | Federal Financial Supervisory Authority (Bundesanstalt für Finanzdienstleistungsaufsicht) |
+| GwG | German Anti-Money Laundering Act (Geldwäschegesetz) |
+| WpHG | German Securities Trading Act (Wertpapierhandelsgesetz) |
+
+All institutions, people, places (Sampletown, Example Valley), registry references and domains
+in the prototype are fictional.
 
 ## The happy path in one picture
 
@@ -168,8 +186,8 @@ forged credentials, seven manifest attacks rejected with their reason codes, and
 application is still in its previous state (**not** `REJECTED`) and the real customer can
 continue. `demo_manual_review` shows the synthetic compliance review (`customer_ref`
 `synthetic-review-...`), the generic agent view, the customer signing in on the bank page and
-pressing **"Mit einer Person sprechen"** (a forged CSRF token is refused; the answer is the same
-neutral "Anfrage erhalten"), the operator console (`list`, `show`, `request-info`, refused decisions, `add-evidence`,
+pressing **"Speak to a person"** (a forged CSRF token is refused; the answer is the same
+neutral "Request received"), the operator console (`list`, `show`, `request-info`, refused decisions, `add-evidence`,
 `decide RE_EVALUATE`), compliance attempt 2 `PASS`, submission, `OPENED` and a restart.
 
 ## Start FastAPI
@@ -244,7 +262,7 @@ Human review (Phase 04, DEV only - there is no operator HTTP endpoint):
 `python -m scripts.dev_operator --operator op-reviewer-1 list` / `show --case <id>` /
 `request-info` / `add-evidence` / `decide --decision RE_EVALUATE|RESUME|REJECT|ACKNOWLEDGE`
 (`REJECT` needs `op-supervisor-1`). A signed-in customer asks for a person with the
-**"Mit einer Person sprechen"** button on the bank page (review page and confirmation page) or
+**"Speak to a person"** button on the bank page (review page and confirmation page) or
 with `POST /v1/customer/applications/{id}/request-human` - both need the customer's server-side
 session and its CSRF token for that application; a self-asserted `X-Dev-Customer-Id` header or
 an agent token is refused (details: [docs/onboarding-flow.md](docs/onboarding-flow.md)).
@@ -305,7 +323,7 @@ secret in **production**; or `llm` mode without `TRUSTEQ_ENABLE_LLM=true`. Phase
 | Human review | durable cases, generic customer acknowledgement, fixed operator decisions, re-evaluation as a new deterministic attempt, supervisor-only rejection, audit | synthetic operators and evidence references; MOCK compliance scenario switch | case management with SSO, RBAC, four-eyes, SLAs, evidence store |
 | Agent | scripted, REST only, no key | - | optional LLM behind an explicit flag (Phase 05) |
 | Agent authorization | **real and tested, controlled DEV implementation**: opaque bearer tokens stored as SHA-256 hashes; issuer, audience, expiry, `jti`, revocation, per-operation scopes, resource binding; single-use bootstrap; revoked at terminal states | first grant from a trusted DEV CLI | OAuth 2.0 / FAPI 2.0, sender-constrained tokens (DPoP/mTLS), RFC 9396 / RFC 8693 |
-| Customer authentication + intervention | server-side session (hashed secret, HttpOnly/SameSite=Strict/Secure-on-HTTPS cookies for the pages and the customer API, expiry, rotation) + per-target CSRF tokens; "Mit einer Person sprechen" and `request-human` require both | **DEV simulation** of the sign-in itself; `X-Dev-Customer-Id` only on the Phase 02 JSON confirmation ceremony | bank-controlled strong authentication (online banking / eID / EUDI wallet), a customer case view, phone/chat channels |
+| Customer authentication + intervention | server-side session (hashed secret, HttpOnly/SameSite=Strict/Secure-on-HTTPS cookies for the pages and the customer API, expiry, rotation) + per-target CSRF tokens; "Speak to a person" and `request-human` require both | **DEV simulation** of the sign-in itself; `X-Dev-Customer-Id` only on the Phase 02 JSON confirmation ceremony | bank-controlled strong authentication (online banking / eID / EUDI wallet), a customer case view, phone/chat channels |
 | KYC / compliance / contract / depot provider | the deterministic workflow around them; the signed callback is the only path to `OPENED` | **MOCK** results, `mock=true`, `MOCK-` references | contracted regulated providers, partner integration with mTLS |
 | Policy, state machine, audit, idempotency, persistence, recovery | real and tested (schema v4 with resumable upgrades) | - | HA database, durable workflow engine, DORA controls, security review |
 

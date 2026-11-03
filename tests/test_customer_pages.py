@@ -67,9 +67,9 @@ def test_review_page_shows_everything_the_customer_is_approving(flow: Flow) -> N
     assert page.status_code == 200
     html = page.text
     for expected in (
-        "Beispielbank Depot AG (MOCK)",  # provider
-        "Wertpapierdepot Basis (MOCK)",  # product
-        "Direktvertrieb (MOCK)",  # distribution channel
+        "Example Depot Bank AG (MOCK)",  # provider
+        "Basic Securities Account (MOCK)",  # product
+        "Direct sales (MOCK)",  # distribution channel
         started.application_id,  # application reference
         "Open a securities account",  # exact requested action
         "kid-depot-basic",  # disclosure document ...
@@ -181,7 +181,7 @@ def test_the_wrong_customer_is_shown_nothing_and_cannot_confirm(flow: Flow) -> N
     page = flow.customer_http.get(page_url(started), params={"token": started.nonce})
     assert page.status_code == 403
     for detail in (
-        "Beispielbank",
+        "Example Depot Bank",
         started.application_id,
         started.action_digest,
         "Confirm and authorize",

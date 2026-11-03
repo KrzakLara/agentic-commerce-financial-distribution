@@ -7,7 +7,7 @@ a CSRF token bound to the browser's (pre-)session and to this handoff (Phase 03)
 These pages are a PROTOTYPE of the bank's confirmation ceremony. The customer sign-in on them
 is a DEV-ONLY simulation (see `app.api.customer_auth`), not identity verification.
 
-Phase 04: the review page and the confirmation page carry a "Mit einer Person sprechen" form
+Phase 04: the review page and the confirmation page carry a "Speak to a person" form
 (request a human). It posts to this origin with the session's CSRF token for exactly this
 application; its acknowledgement is the same neutral text in every case.
 """
@@ -189,7 +189,7 @@ def result_page(
     title: str, message: str, ok: bool, human_request: tuple[str, str] | None = None
 ) -> str:
     """A short outcome page; `human_request` = (application_id, CSRF token) adds the
-    "Mit einer Person sprechen" form (e.g. after a confirmation)."""
+    "Speak to a person" form (e.g. after a confirmation)."""
     css = "ok" if ok else "err"
     body = f'<p class="{css}">{escape(message)}</p>'
     if human_request is not None:
@@ -199,15 +199,12 @@ def result_page(
 
 # The fixed request categories (no free text, so no personal or sensitive data is collected).
 HUMAN_REQUEST_CHOICES = (
-    ("QUESTION_ABOUT_PRODUCT", "Frage zum Produkt"),
-    ("HELP_WITH_PROCESS", "Hilfe beim Ablauf"),
-    (
-        "DISAGREE_WITH_AUTOMATED_RESULT",
-        "Ich bin mit einem automatischen Ergebnis nicht einverstanden",
-    ),
-    ("OTHER", "Sonstiges"),
+    ("QUESTION_ABOUT_PRODUCT", "Question about the product"),
+    ("HELP_WITH_PROCESS", "Help with the process"),
+    ("DISAGREE_WITH_AUTOMATED_RESULT", "I disagree with an automated result"),
+    ("OTHER", "Other"),
 )
-HUMAN_REQUEST_BUTTON = "Mit einer Person sprechen"
+HUMAN_REQUEST_BUTTON = "Speak to a person"
 
 
 def human_request_form(application_id: str, csrf_token: str) -> str:
@@ -220,10 +217,10 @@ def human_request_form(application_id: str, csrf_token: str) -> str:
         '<form class="human" method="post" '
         f'action="/customer/applications/{escape(application_id, quote=True)}/request-human">'
         f'<input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}">'
-        "<p><strong>Lieber mit einem Menschen sprechen?</strong> Sie koennen jederzeit eine "
-        "Mitarbeiterin oder einen Mitarbeiter der Bank hinzuziehen. (You can ask for a person at "
-        "any time; this does not skip any of the bank's checks.)</p>"
-        f'<label>Anliegen <select name="category">{options}</select></label> '
+        "<p><strong>Would you prefer to speak to a person?</strong> You can ask for a member of "
+        "the bank's staff at any time. Asking for a person does not skip any of the bank's "
+        "checks.</p>"
+        f'<label>Topic <select name="category">{options}</select></label> '
         f'<button type="submit" class="secondary">{escape(HUMAN_REQUEST_BUTTON)}</button>'
         "</form>"
     )
@@ -231,9 +228,4 @@ def human_request_form(application_id: str, csrf_token: str) -> str:
 
 def human_request_ack_page(message: str) -> str:
     """The same neutral acknowledgement in every case - it never says whether a review exists."""
-    body = (
-        '<p class="ok">Ihre Anfrage wurde aufgenommen. Eine Mitarbeiterin oder ein Mitarbeiter '
-        "der Bank meldet sich ueber die ueblichen Kanaele der Bank bei Ihnen.</p>"
-        f"<p>{escape(message)}</p>"
-    )
-    return _document("Anfrage erhalten", body)
+    return _document("Request received", f'<p class="ok">{escape(message)}</p>')

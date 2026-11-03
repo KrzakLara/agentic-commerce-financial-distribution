@@ -116,7 +116,7 @@ def test_the_approved_action_binds_the_terms_and_the_registered_partner(flow: Fl
     partner_action = handoff_action(flow, partner.application_id)
     assert direct_action["terms_digest"] == partner_action["terms_digest"] == terms
     assert direct_action["partner_id"] is None
-    assert partner_action["partner_id"] == "hausbank-musterstadt"  # from the registry
+    assert partner_action["partner_id"] == "sampletown-coop-bank"  # from the registry
 
 
 def test_the_disclosure_receipt_is_bound_to_the_exact_version_and_action(flow: Flow) -> None:
@@ -199,7 +199,7 @@ def test_approvals_from_before_phase_04_keep_their_digest() -> None:
         json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     assert ApprovedAction(**legacy).digest() == phase03_digest
-    bound = ApprovedAction(**legacy, terms_digest="b" * 64, partner_id="hausbank-musterstadt")
+    bound = ApprovedAction(**legacy, terms_digest="b" * 64, partner_id="sampletown-coop-bank")
     assert bound.digest() != phase03_digest
 
 
@@ -216,7 +216,7 @@ def test_a_partner_attribution_is_recorded_from_the_registry_with_the_consent(fl
     manifest_digest = flow.container.catalog.get_provider("fixture-bank").manifest_digest
     assert row == (
         started.application_id, "fixture-bank", "partner-1", "PARTNER_BANK",
-        "hausbank-musterstadt", manifest_digest, consent_id,
+        "sampletown-coop-bank", manifest_digest, consent_id,
     )  # fmt: skip
     # three distinct roles: depot provider, partner bank - and the partner is not the provider
     assert row[1] != row[4]
@@ -292,7 +292,7 @@ def test_an_ended_partnership_stops_a_pending_approval(flow: Flow) -> None:
 def test_the_attribution_cannot_change_after_consent(flow: Flow) -> None:
     started = confirmed(flow, PARTNER_INTENT)
     for statement in (
-        "UPDATE channel_attributions SET partner_id = 'beispieltal-bank'",
+        "UPDATE channel_attributions SET partner_id = 'example-valley-savings-bank'",
         "DELETE FROM channel_attributions",
         "UPDATE applications SET channel_id = 'direct'",
         "UPDATE applications SET provider_id = 'rogue-bank'",
@@ -302,7 +302,7 @@ def test_the_attribution_cannot_change_after_consent(flow: Flow) -> None:
     with pytest.raises(DBAPIError):  # one attribution per application
         flow.execute("INSERT INTO channel_attributions SELECT * FROM channel_attributions")
     assert flow.sql("SELECT channel_id, partner_id FROM channel_attributions") == [
-        ("partner-1", "hausbank-musterstadt")
+        ("partner-1", "sampletown-coop-bank")
     ]
     assert flow.sql(
         "SELECT channel_id FROM applications WHERE application_id = :a", a=started.application_id

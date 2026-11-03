@@ -6,7 +6,7 @@ person, and a bank operator who re-evaluates WITH evidence (never overrides a ch
 Actors (separate clients, as in ``scripts.demo_happy``):
     AGENT          the scripted customer agent: public API + bearer tokens only
     CUSTOMER       a browser on the bank-controlled pages: SIMULATED sign-in, server-side
-                   session, CSRF-protected forms, the "Mit einer Person sprechen" button
+                   session, CSRF-protected forms, the "Speak to a person" button
     BANK           the trusted backend: dev bootstrap, read-only database checks
     OPERATOR       bank staff through the trusted dev console (``scripts.dev_operator``)
     MOCK PROVIDER  the depot provider's signed confirmation
@@ -263,7 +263,7 @@ def run(keep: bool, restart: bool) -> None:  # noqa: C901 - a linear, narrated s
             button_url, data={"csrf_token": form.group(1), "category": "QUESTION_ABOUT_PRODUCT"}
         )
         expect(
-            asked.status_code == 200 and "Anfrage erhalten" in asked.text,
+            asked.status_code == 200 and "Request received" in asked.text,
             f"request-human failed: HTTP {asked.status_code}",
         )
         lowered = asked.text.lower()
@@ -273,7 +273,7 @@ def run(keep: bool, restart: bool) -> None:  # noqa: C901 - a linear, narrated s
         )
         tl.say(
             "CUSTOMER",
-            f"pressed '{HUMAN_REQUEST_BUTTON}' -> 'Anfrage erhalten': staff will get in touch",
+            f"pressed '{HUMAN_REQUEST_BUTTON}' -> 'Request received': staff will get in touch",
         )
         tl.say(
             "BANK",

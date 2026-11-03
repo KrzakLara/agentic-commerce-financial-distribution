@@ -88,14 +88,14 @@ def overlong_conditions(m: Manifest) -> None:
 def test_the_default_manifest_passes_every_check() -> None:
     catalog = FixtureProviderDiscovery()
     bank = catalog.get_provider("fixture-bank")
-    assert bank.verified_domain == "depot.beispielbank.example"
-    assert bank.api_endpoint == "https://api.depot.beispielbank.example/onboarding/v1"
+    assert bank.verified_domain == "depot.examplebank.example"
+    assert bank.api_endpoint == "https://api.depot.examplebank.example/onboarding/v1"
     assert bank.trust_anchor == "dev-fixture-bank-2026"
     assert bank.registry_reference == "MOCKLEI0FIXTUREBANK1"
     assert bank.expires_at == datetime(2027, 11, 1, tzinfo=UTC)
     channels = {c.channel_id: c for c in catalog.list_channels("fixture-bank")}
     assert channels["partner-1"].kind is ChannelKind.PARTNER_BANK
-    assert channels["partner-1"].partner_name == "Hausbank Musterstadt eG (MOCK)"  # register
+    assert channels["partner-1"].partner_name == "Sampletown Cooperative Bank eG (MOCK)"  # register
     assert channels["partner-1"].active and not channels["partner-2"].active
     assert channels["direct"].partner_id is None
 
@@ -103,8 +103,8 @@ def test_the_default_manifest_passes_every_check() -> None:
 def test_the_manifest_endpoint_shows_what_was_verified(flow: Flow) -> None:
     body = flow.agent_http.get("/v1/providers/fixture-bank/manifest").json()
     assert body["registry_reference"] == "MOCKLEI0FIXTUREBANK1"
-    assert body["verified_domain"] == "depot.beispielbank.example"
-    assert body["api_endpoint"].startswith("https://api.depot.beispielbank.example/")
+    assert body["verified_domain"] == "depot.examplebank.example"
+    assert body["api_endpoint"].startswith("https://api.depot.examplebank.example/")
     assert body["signature_algorithm"] == "HMAC-SHA256"
     assert body["trust_anchor"] == "dev-fixture-bank-2026"
     assert body["verification_checks"] == list(VERIFICATION_CHECKS)
@@ -120,17 +120,17 @@ CASES: list[tuple[str, Edit, str]] = [
     ("endpoint-substituted", set_provider(api_endpoint=ROGUE_ENDPOINT), "endpoint_not_approved"),
     (
         "endpoint-unapproved-subdomain",
-        set_provider(api_endpoint="https://evil.depot.beispielbank.example/v1"),
+        set_provider(api_endpoint="https://evil.depot.examplebank.example/v1"),
         "endpoint_not_approved",
     ),
     (
         "endpoint-not-https",
-        set_provider(api_endpoint="http://api.depot.beispielbank.example/onboarding/v1"),
+        set_provider(api_endpoint="http://api.depot.examplebank.example/onboarding/v1"),
         "endpoint_not_approved",
     ),
     (
         "domain-mismatch",
-        set_provider(verified_domain="beispielbank-depot.example"),
+        set_provider(verified_domain="examplebank-depot.example"),
         "domain_mismatch",
     ),
     ("name-mismatch", set_provider(legal_name="Fake Bank AG"), "identity_mismatch"),
@@ -149,7 +149,7 @@ CASES: list[tuple[str, Edit, str]] = [
     ("unapproved-channel", add_unapproved_channel, "channel_not_approved"),
     (
         "fund-provider-as-partner",
-        set_channel("partner-1", partner_id="musterfonds-kag"),
+        set_channel("partner-1", partner_id="sample-fund-manager"),
         "channel_not_approved",
     ),
     (
@@ -160,12 +160,13 @@ CASES: list[tuple[str, Edit, str]] = [
     ("unknown-partner", set_channel("partner-1", partner_id="unknown"), "channel_not_approved"),
     (
         "direct-channel-with-partner",
-        set_channel("direct", partner_id="hausbank-musterstadt"),
+        set_channel("direct", partner_id="sampletown-coop-bank"),
         "malformed",
     ),
     ("stale-version", set_provider(manifest_version="2026-10-01"), "stale_version"),
+    ("previous-version", set_provider(manifest_version="2026-11-01"), "stale_version"),
     ("malformed-version", set_provider(manifest_version="v1"), "malformed"),
-    ("expired", set_provider(expires_at="2026-11-02T00:00:00+00:00"), "expired"),
+    ("expired", set_provider(expires_at="2026-11-03T08:00:00+00:00"), "expired"),
     ("not-yet-valid", set_provider(issued_at="2026-12-01T00:00:00+00:00"), "not_yet_valid"),
     ("naive-timestamp", set_provider(expires_at="2027-11-01T00:00:00"), "malformed"),
     ("overlong-text", overlong_conditions, "malformed"),

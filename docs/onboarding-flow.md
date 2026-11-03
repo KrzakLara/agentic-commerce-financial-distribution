@@ -232,15 +232,15 @@ DENIED         agent proposes a fake provider / fabricated or inactive channel /
 MANUAL REVIEW  customer confirms -> KYC PASS -> MOCK compliance REVIEW_REQUIRED
                -> MANUAL_REVIEW (resume_status COMPLIANCE_PENDING) + review case (internal reason)
                agent sees ACTION_REQUIRED; submit 409; a signed provider callback is refused
-               customer (bank page, session + CSRF): presses "Mit einer Person sprechen"
-               -> "Anfrage erhalten" (joins the case; the same neutral answer as always)
+               customer (bank page, session + CSRF): presses "Speak to a person"
+               -> "Request received" (joins the case; the same neutral answer as always)
                operator: request-info -> (RE_EVALUATE refused while waiting; REJECT needs a
                supervisor) -> add-evidence SYN-SOF-0001 -> decide RE_EVALUATE
                -> MANUAL_REVIEW -> COMPLIANCE_PENDING (OPERATOR) -> compliance attempt 2 PASS
                -> CONTRACT_PENDING -> agent submits -> provider callback -> OPENED
 ```
 
-### Asking for a person: the "Mit einer Person sprechen" button
+### Asking for a person: the "Speak to a person" button
 
 The signed-in (simulated) customer sees the button on the bank-controlled review page - before
 the contract - and again on the confirmation page - after it (ADR section 09: "before contract;

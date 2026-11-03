@@ -126,26 +126,37 @@ TRUST_ANCHORS: dict[str, TrustAnchor] = {
 PROVIDER_REGISTER: dict[str, ApprovedProvider] = {
     "fixture-bank": ApprovedProvider(
         provider_id="fixture-bank",
-        legal_name="Beispielbank Depot AG (MOCK)",
+        legal_name="Example Depot Bank AG (MOCK)",
         registry_reference="MOCKLEI0FIXTUREBANK1",
         role=ProviderRole.DEPOT_PROVIDER,
-        verified_domain="depot.beispielbank.example",  # RFC 2606 .example: never real
-        api_endpoints=frozenset({"https://api.depot.beispielbank.example/onboarding/v1"}),
+        verified_domain="depot.examplebank.example",  # RFC 2606 .example: never real
+        api_endpoints=frozenset({"https://api.depot.examplebank.example/onboarding/v1"}),
         capabilities=REQUIRED_CAPABILITIES | {"STATUS_QUERY"},
         channel_ids=frozenset({"direct", "partner-1", "partner-2"}),
         trust_anchor=DEV_TRUST_ANCHOR_ID,
-        minimum_manifest_version="2026-11-01",
+        minimum_manifest_version="2026-11-03",
     )
 }
 PARTNER_REGISTER: dict[str, ApprovedPartner] = {
-    "hausbank-musterstadt": ApprovedPartner(
-        "hausbank-musterstadt", "Hausbank Musterstadt eG (MOCK)", ProviderRole.PARTNER_BANK, True
+    "sampletown-coop-bank": ApprovedPartner(
+        "sampletown-coop-bank",
+        "Sampletown Cooperative Bank eG (MOCK)",
+        ProviderRole.PARTNER_BANK,
+        True,
     ),
-    "beispieltal-bank": ApprovedPartner(  # partnership ended: its channel can no longer be used
-        "beispieltal-bank", "Sparkasse Beispieltal (MOCK)", ProviderRole.PARTNER_BANK, False
+    # The partnership ended: its channel can no longer be used.
+    "example-valley-savings-bank": ApprovedPartner(
+        "example-valley-savings-bank",
+        "Example Valley Savings Bank (MOCK)",
+        ProviderRole.PARTNER_BANK,
+        False,
     ),
-    "musterfonds-kag": ApprovedPartner(  # a FUND provider: never a depot distribution partner
-        "musterfonds-kag", "Musterfonds KAG (MOCK)", ProviderRole.FUND_PROVIDER, True
+    # A FUND provider (KVG: German investment management company): never a depot partner.
+    "sample-fund-manager": ApprovedPartner(
+        "sample-fund-manager",
+        "Sample Fund Management KVG (MOCK)",
+        ProviderRole.FUND_PROVIDER,
+        True,
     ),
 }
 ALLOWED_PROVIDER_IDS = frozenset(PROVIDER_REGISTER)
@@ -180,7 +191,7 @@ class CatalogFixture:
 
 
 # Pinned in code on purpose: editing the fixture without re-pinning makes loading fail.
-_PINNED_MANIFEST_DIGEST = "ec46b2134d63de2add0a27f5d67ccd7fbfd52381c69054bd7bfc401c5a7cff63"
+_PINNED_MANIFEST_DIGEST = "529b550ce160ecb573897ca54c10b73fbed65580e6b45f08a56e9f42a40969dc"
 _PINNED_RISK_DIGEST = "f67a5d990a3aa46af4c54e3dd7e319f81f63e77a6952cb559a42e935976c7ad4"
 _PINNED_PRICE_LIST_DIGEST = "7c88a17263a16663eb591d00ffffccc8c2dac41b07cc060c6426763553e49445"
 
@@ -202,51 +213,55 @@ def _build_default() -> CatalogFixture:
     manifest = {
         "provider": {
             "provider_id": "fixture-bank",
-            "legal_name": "Beispielbank Depot AG (MOCK)",
+            "legal_name": "Example Depot Bank AG (MOCK)",
             "registry_reference": "MOCKLEI0FIXTUREBANK1",
             "role": "DEPOT_PROVIDER",
-            "verified_domain": "depot.beispielbank.example",
-            "api_endpoint": "https://api.depot.beispielbank.example/onboarding/v1",
+            "verified_domain": "depot.examplebank.example",
+            "api_endpoint": "https://api.depot.examplebank.example/onboarding/v1",
             "capabilities": ["DEPOT_ACCOUNT_OPENING", "SIGNED_STATUS_CALLBACK"],
-            "manifest_version": "2026-11-01",
-            "issued_at": "2026-11-01T00:00:00+00:00",
+            # 2026-11-03: re-issued after the English localization (display names, partner
+            # ids, verified domain). The KID and the price list are unchanged, so their
+            # versions and digests stay; the product's commercial terms are unchanged.
+            "manifest_version": "2026-11-03",
+            "issued_at": "2026-11-03T00:00:00+00:00",
             "expires_at": "2027-11-01T00:00:00+00:00",
         },
         "channels": [
             {
-                "channel_id": "direct", "label": "Direktvertrieb (MOCK)", "is_partner": False,
+                "channel_id": "direct", "label": "Direct sales (MOCK)", "is_partner": False,
                 "kind": "DIRECT", "partner_id": None, "active": True,
                 "product_ids": ["depot-basic"],
             },
             {
-                "channel_id": "partner-1", "label": "Hausbank Musterstadt (MOCK)",
-                "is_partner": True, "kind": "PARTNER_BANK", "partner_id": "hausbank-musterstadt",
+                "channel_id": "partner-1", "label": "Sampletown Cooperative Bank (MOCK)",
+                "is_partner": True, "kind": "PARTNER_BANK", "partner_id": "sampletown-coop-bank",
                 "active": True, "product_ids": ["depot-basic"],
             },
             {
-                "channel_id": "partner-2", "label": "Sparkasse Beispieltal (MOCK)",
-                "is_partner": True, "kind": "PARTNER_BANK", "partner_id": "beispieltal-bank",
-                "active": False, "product_ids": ["depot-basic"],
+                "channel_id": "partner-2", "label": "Example Valley Savings Bank (MOCK)",
+                "is_partner": True, "kind": "PARTNER_BANK",
+                "partner_id": "example-valley-savings-bank", "active": False,
+                "product_ids": ["depot-basic"],
             },
         ],
         "products": [
             {
                 "product_id": "depot-basic",
-                "name": "Wertpapierdepot Basis (MOCK)",
+                "name": "Basic Securities Account (MOCK)",
                 "catalog_version": "2026.11",
                 "risk_document_id": "kid-depot-basic",
                 "risk_document_version": "1.0",
                 "risk_document_digest": risk_digest,
                 "fees": [
-                    {"code": "custody", "label": "Depotfuehrung (MOCK)", "amount": "0.00 EUR p.a."},
-                    {"code": "order", "label": "Orderentgelt (MOCK)", "amount": "4.90 EUR"},
+                    {"code": "custody", "label": "Custody fee (MOCK)", "amount": "0.00 EUR p.a."},
+                    {"code": "order", "label": "Order fee (MOCK)", "amount": "4.90 EUR"},
                 ],
                 "conditions": "Synthetic conditions (MOCK): no minimum deposit, cancel any time.",
                 "risk_class": "3 of 7 (synthetic scale)",
                 "risk_summary": "Securities can lose value; this is not personalized advice.",
                 "sources": [
                     {
-                        "source_id": "price-list", "title": "Preisverzeichnis (MOCK)",
+                        "source_id": "price-list", "title": "Price list (MOCK)",
                         "document_id": "pli-depot-basic", "document_version": "2026.11",
                         "document_digest": price_digest,
                     }

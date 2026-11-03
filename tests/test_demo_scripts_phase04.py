@@ -65,9 +65,9 @@ def test_the_manual_review_demo_shows_the_human_loop_without_bypass() -> None:
     for milestone in (
         "MOCK compliance=REVIEW_REQUIRED",
         "generic state: ACTION_REQUIRED",
-        "review page: exact action, terms, partner - and the button 'Mit einer Person sprechen'",
+        "review page: exact action, terms, partner - and the button 'Speak to a person'",
         "(probe) the button with a forged CSRF token -> HTTP 403",
-        "pressed 'Mit einer Person sprechen' -> 'Anfrage erhalten'",
+        "pressed 'Speak to a person' -> 'Request received'",
         "request-human claiming to BE the customer (header) -> HTTP 401",
         "(supervisor_required)",
         "MANUAL_REVIEW -> COMPLIANCE_PENDING by OPERATOR (review_re_evaluate)",
