@@ -6,9 +6,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import pages
-from app.api.customer_auth import DEV_CUSTOMER_COOKIE, read_session, sign_session
+from app.api.customer_auth import LOGIN_COOKIE, SESSION_COOKIE
 from app.core.config import Environment, Settings
 from app.main import create_app
+from app.services.customer_session_service import hash_secret
 from app.services.onboarding_service import HandoffReview
 from tests.flow import Flow, Started
 
@@ -18,9 +19,17 @@ def page_url(started: Started) -> str:
 
 
 def sign_in(flow: Flow, started: Started, customer_id: str = "cust-1", **kwargs):  # noqa: ANN003, ANN201
+    """Like a browser: open the link (sign-in form + its login-CSRF cookie), submit the form."""
+    form = flow.customer_http.get(page_url(started), params={"token": started.nonce})
+    login_csrf = re.search(r'name="login_csrf" value="([^"]*)"', form.text)
     return flow.customer_http.post(
         "/customer/dev-login",
-        data={"customer_id": customer_id, "handoff_id": started.handoff_id, "token": started.nonce},
+        data={
+            "customer_id": customer_id,
+            "handoff_id": started.handoff_id,
+            "token": started.nonce,
+            "login_csrf": login_csrf.group(1) if login_csrf else "",
+        },
         follow_redirects=False,
         **kwargs,
     )
@@ -33,8 +42,19 @@ def digest_in(html: str) -> str:
 
 
 def confirm_form(flow: Flow, started: Started, **overrides: str):  # noqa: ANN201
-    form = {"token": started.nonce, "action_digest": started.action_digest, **overrides}
+    form = {
+        "token": started.nonce,
+        "action_digest": started.action_digest,
+        "csrf_token": flow.page_csrf(started),  # what the page embedded for THIS session
+        **overrides,
+    }
     return flow.customer_http.post(f"{page_url(started)}/confirm", data=form)
+
+
+def session_cookie_line(response) -> str:  # noqa: ANN001
+    lines = [c for c in response.headers.get_list("set-cookie") if c.startswith(SESSION_COOKIE)]
+    assert len(lines) == 1, response.headers.get_list("set-cookie")
+    return lines[0].lower()
 
 
 # --- what the customer sees --------------------------------------------------
@@ -63,6 +83,7 @@ def test_review_page_shows_everything_the_customer_is_approving(flow: Flow) -> N
         assert expected in html, expected
     assert digest_in(html) == started.action_digest
     assert "cannot confirm it for you" in html  # tells the customer the agent has no say
+    assert f'name="csrf_token" value="{flow.page_csrf(started)}"' in html  # session-bound
 
 
 def test_pages_carry_strict_security_headers(flow: Flow) -> None:
@@ -90,21 +111,35 @@ def test_the_confirm_button_completes_the_ceremony_end_to_end(flow: Flow) -> Non
 # --- the simulated sign-in --------------------------------------------------
 
 
-def test_the_session_cookie_is_httponly_samesite_strict_and_scoped_to_customer_pages(
-    flow: Flow,
-) -> None:
+def test_the_session_cookie_is_httponly_samesite_strict_scoped_and_expiring(flow: Flow) -> None:
     started = flow.start()
-    cookie = sign_in(flow, started).headers["set-cookie"].lower()
+    cookie = session_cookie_line(sign_in(flow, started))
     assert "httponly" in cookie and "samesite=strict" in cookie and "path=/customer" in cookie
-    assert cookie.startswith(DEV_CUSTOMER_COOKIE)
+    assert "max-age=900" in cookie  # the browser forgets it; the server enforces it anyway
+    assert "secure" not in cookie.replace("samesite", "")  # plain http in tests: not Secure
+
+
+def test_the_session_cookie_is_secure_when_served_over_https(flow: Flow) -> None:
+    started = flow.start()
+    browser = TestClient(flow.app, base_url="https://testserver")
+    response = flow.page_sign_in(started, client=browser)
+    assert response.status_code == 303
+    assert "; secure" in session_cookie_line(response)
 
 
 def test_a_forged_session_cookie_is_not_a_sign_in(flow: Flow) -> None:
     started = flow.start()
-    other_key_cookie = sign_session(b"k" * 32, "cust-1")  # signed with a key the server never had
-    for forged in ("cust-1", "cust-1.deadbeef", other_key_cookie, "." + "0" * 64):
+    sign_in(flow, started)
+    real = flow.customer_http.cookies.get(SESSION_COOKIE, path="/customer") or ""
+    for forged in (
+        "cust-1",
+        "cust-1.deadbeef",  # the Phase 02 cookie format
+        "tqs_" + "A" * 43,  # well-formed, never issued
+        hash_secret(real),  # the stored hash is not the secret
+        real[:-1] + ("A" if real[-1] != "A" else "B"),  # one character changed
+    ):
         client = TestClient(flow.app)
-        client.cookies.set(DEV_CUSTOMER_COOKIE, forged, path="/customer")
+        client.cookies.set(SESSION_COOKIE, forged, path="/customer")
         page = client.get(page_url(started), params={"token": started.nonce})
         assert "Sign in" in page.text and started.application_id not in page.text, forged
         assert (
@@ -117,13 +152,15 @@ def test_a_forged_session_cookie_is_not_a_sign_in(flow: Flow) -> None:
     assert flow.status_of(started.application_id) == "AWAITING_AUTHORIZATION"
 
 
-def test_session_cookie_signing_round_trips_and_rejects_tampering() -> None:
-    key = b"s" * 32
-    cookie = sign_session(key, "cust-1")
-    assert read_session(key, cookie) == "cust-1"
-    assert read_session(key, cookie.replace("cust-1", "cust-2")) is None
-    assert read_session(b"x" * 32, cookie) is None
-    assert read_session(key, None) is None and read_session(key, "nodot") is None
+def test_only_the_hash_of_the_session_secret_is_stored(flow: Flow) -> None:
+    started = flow.start()
+    sign_in(flow, started)
+    secret = flow.customer_http.cookies.get(SESSION_COOKIE, path="/customer") or ""
+    assert secret.startswith("tqs_")
+    ((stored_hash, customer),) = flow.sql("SELECT secret_hash, customer_id FROM customer_sessions")
+    assert (stored_hash, customer) == (hash_secret(secret), "cust-1")
+    for table in ("customer_sessions", "audit_events"):
+        assert secret not in repr(flow.sql(f"SELECT * FROM {table}")), table  # noqa: S608
 
 
 def test_sign_in_requires_a_valid_customer_id(flow: Flow) -> None:
@@ -132,6 +169,7 @@ def test_sign_in_requires_a_valid_customer_id(flow: Flow) -> None:
         response = sign_in(flow, started, customer_id=bad)
         assert response.status_code == 400, bad
         assert "set-cookie" not in response.headers
+    assert flow.sql("SELECT COUNT(*) FROM customer_sessions") == [(0,)]
 
 
 # --- wrong customer / bad link / reuse / expiry -----------------------------------------
@@ -149,10 +187,12 @@ def test_the_wrong_customer_is_shown_nothing_and_cannot_confirm(flow: Flow) -> N
         "Confirm and authorize",
     ):
         assert detail not in page.text
-    refused = confirm_form(flow, started)
+    refused = confirm_form(flow, started)  # even with cust-2's own valid CSRF token
     assert refused.status_code == 403 and "Confirmation recorded" not in refused.text
     assert flow.status_of(started.application_id) == "AWAITING_AUTHORIZATION"
     assert flow.sql("SELECT COUNT(*) FROM consent_receipts") == [(0,)]
+    reasons = [e.details.get("reason") for e in flow.audit(started.application_id)]
+    assert "customer_mismatch" in reasons
 
 
 def test_a_malformed_link_token_is_rejected_before_anything_happens(flow: Flow) -> None:
@@ -182,7 +222,7 @@ def test_pressing_confirm_twice_is_refused_the_second_time(flow: Flow) -> None:
     started = flow.start()
     sign_in(flow, started)
     assert confirm_form(flow, started).status_code == 200
-    again = confirm_form(flow, started)
+    again = confirm_form(flow, started)  # same session, same (still valid) CSRF token
     assert again.status_code == 409
     assert flow.sql("SELECT COUNT(*) FROM consent_receipts") == [(1,)]
 
@@ -203,16 +243,17 @@ def test_cross_site_form_posts_are_rejected(flow: Flow) -> None:
     evil = {"Origin": "https://evil.example"}
     assert sign_in(flow, started, headers=evil).status_code == 403
     sign_in(flow, started)  # a legitimate sign-in exists ...
+    csrf = flow.page_csrf(started)
     forged = flow.customer_http.post(
         f"{page_url(started)}/confirm",
-        data={"token": started.nonce, "action_digest": started.action_digest},
+        data={"token": started.nonce, "action_digest": started.action_digest, "csrf_token": csrf},
         headers=evil,
     )
     assert forged.status_code == 403  # ... but a request from another site cannot use it
     assert flow.status_of(started.application_id) == "AWAITING_AUTHORIZATION"
     same_origin = flow.customer_http.post(
         f"{page_url(started)}/confirm",
-        data={"token": started.nonce, "action_digest": started.action_digest},
+        data={"token": started.nonce, "action_digest": started.action_digest, "csrf_token": csrf},
         headers={"Origin": "http://testserver"},
     )
     assert same_origin.status_code == 200
@@ -259,11 +300,15 @@ def test_every_dynamic_value_is_html_escaped() -> None:
         provider_name="<b>Evil</b>",
         product_name="<u>P</u>",
         channel_label="'; DROP TABLE",
+        csrf_token='"><img src=y>',  # noqa: S106 - hostile test input
     )
-    for raw in ("<script>", "<b>Evil</b>", "<u>P</u>", "<img src=x", "<i>1</i>", '"><script>'):
+    for raw in (
+        "<script>", "<b>Evil</b>", "<u>P</u>", "<img src=x", "<i>1</i>", '"><script>', "<img src=y",
+    ):  # fmt: skip
         assert raw not in html, raw
     assert "&lt;script&gt;" in html and "&lt;b&gt;Evil&lt;/b&gt;" in html
-    assert "&lt;script&gt;" in pages.sign_in_page("h", "t", error="<script>")
+    sign_in_html = pages.sign_in_page("h", "t", error="<script>", login_csrf='"><b>x</b>')
+    assert "&lt;script&gt;" in sign_in_html and "<b>x</b>" not in sign_in_html
 
 
 # --- the dev sign-in does not exist in production ---------------------------------------
@@ -275,6 +320,7 @@ def test_in_production_the_customer_pages_do_not_offer_a_sign_in(db_url: str) ->
         token = "A" * 43
         page = prod.get("/customer/handoffs/hnd-1", params={"token": token})
         assert page.status_code == 401 and "Sign in" not in page.text and "<form" not in page.text
+        assert LOGIN_COOKIE not in page.headers.get("set-cookie", "")
         login = prod.post(
             "/customer/dev-login",
             data={"customer_id": "cust-1", "handoff_id": "hnd-1", "token": token},

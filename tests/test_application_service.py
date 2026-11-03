@@ -19,10 +19,16 @@ from app.core.exceptions import (
 )
 from app.domain.enums import ApplicationStatus as S
 from app.domain.enums import AuditActorType, AuditOutcome
+from app.domain.mandate import AGENT_API_AUDIENCE
 from app.domain.workflow import TransitionAuthority as A
 from app.repositories.interfaces import UnitOfWork
 from app.repositories.sqlalchemy_repositories import SqlAlchemyAuditRepository
-from app.services.application_service import ApplicationService, CreateApplicationCommand
+from app.services.application_service import (
+    ApplicationService,
+    CreateApplicationCommand,
+    CreateApplicationResult,
+)
+from app.services.authorization_service import AgentPrincipal
 
 CMD = CreateApplicationCommand(
     provider_id="fixture-bank",
@@ -53,9 +59,31 @@ def new_key() -> str:
     return str(uuid.uuid4())
 
 
+def bootstrap_principal(
+    service: ApplicationService, actor: str = "agent-a", customer: str = "opaque-id"
+) -> AgentPrincipal:
+    """A verified principal for a FRESH bootstrap grant (trusted test bootstrap)."""
+    authz = service.authorization
+    token = authz.issue_bootstrap(agent_actor_id=actor, customer_id=customer, correlation_id=CORR)
+    return authz.authenticate(token.token, audience=AGENT_API_AUDIENCE, correlation_id=CORR)
+
+
+def status_principal(
+    service: ApplicationService, result: CreateApplicationResult
+) -> AgentPrincipal:
+    """The read-only status credential the bank issued with this application."""
+    assert result.credentials is not None
+    return service.authorization.authenticate(
+        result.credentials.status.token, audience=AGENT_API_AUDIENCE, correlation_id=CORR
+    )
+
+
 def create(service: ApplicationService, actor: str = "agent-a", cmd=CMD, key: str | None = None):  # noqa: ANN001, ANN201
     return service.create_application(
-        actor_id=actor, command=cmd, idempotency_key=key or new_key(), correlation_id=CORR
+        principal=bootstrap_principal(service, actor, cmd.customer_ref),
+        command=cmd,
+        idempotency_key=key or new_key(),
+        correlation_id=CORR,
     )
 
 
@@ -68,6 +96,15 @@ def move(service: ApplicationService, app_id: str, target: S, authority: A, reas
 def count(engine: Engine, table: str) -> int:
     with engine.connect() as connection:
         return connection.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar_one()  # noqa: S608
+
+
+def application_events(engine: Engine) -> int:
+    """Audit events about applications. (Phase 03: each test bootstrap grant is audited too,
+    as an operator event without an application; those are not business events.)"""
+    with engine.connect() as connection:
+        return connection.execute(
+            text("SELECT COUNT(*) FROM audit_events WHERE application_id IS NOT NULL")
+        ).scalar_one()
 
 
 # --- creation ------------------------------------------------------------
@@ -96,7 +133,7 @@ def test_same_actor_key_and_body_returns_the_original_application(
     assert second.application == first.application
     assert count(engine, "applications") == 1
     assert count(engine, "idempotency_records") == 1
-    assert count(engine, "audit_events") == 1  # a replay is not a new business event
+    assert application_events(engine) == 1  # a replay is not a new business event
 
 
 def test_same_key_with_a_different_body_conflicts_and_is_audited(
@@ -141,16 +178,19 @@ def test_request_hash_is_stable_and_body_sensitive() -> None:
 def test_owner_can_read_and_other_actor_gets_not_found_and_an_audit_entry(
     service: ApplicationService,
 ) -> None:
-    app = create(service, actor="agent-a").application
+    created = create(service, actor="agent-a")
+    app = created.application
+    owner = status_principal(service, created)
     assert (
         service.get_application(
-            actor_id="agent-a", application_id=app.application_id, correlation_id=CORR
+            principal=owner, application_id=app.application_id, correlation_id=CORR
         )
         == app
     )
+    intruder = status_principal(service, create(service, actor="agent-b"))  # valid, own app
     with pytest.raises(NotFoundError):
         service.get_application(
-            actor_id="agent-b", application_id=app.application_id, correlation_id=CORR
+            principal=intruder, application_id=app.application_id, correlation_id=CORR
         )
     denied = [
         e for e in service.audit_trail(app.application_id) if e.outcome is AuditOutcome.DENIED
@@ -161,8 +201,9 @@ def test_owner_can_read_and_other_actor_gets_not_found_and_an_audit_entry(
 
 
 def test_missing_application_is_not_found(service: ApplicationService) -> None:
+    reader = status_principal(service, create(service))
     with pytest.raises(NotFoundError):
-        service.get_application(actor_id="agent-a", application_id="app-nope", correlation_id=CORR)
+        service.get_application(principal=reader, application_id="app-nope", correlation_id=CORR)
 
 
 # --- transitions ------------------------------------------------------------
@@ -190,9 +231,7 @@ def test_invalid_transition_is_rejected_unchanged_and_audited(
     app = create(service).application
     with pytest.raises(InvalidTransitionError):
         move(service, app.application_id, S.CONTRACT_PENDING, A.SYSTEM_POLICY)
-    current = service.get_application(
-        actor_id="agent-a", application_id=app.application_id, correlation_id=CORR
-    )
+    current = service.snapshot(app.application_id)
     assert (current.status, current.version) == (S.DRAFT, 1)
     rejected = service.audit_trail(app.application_id)[-1]
     assert rejected.event_type == "application.transition_rejected"
@@ -210,9 +249,7 @@ def test_the_agent_authority_can_never_change_state(service: ApplicationService,
     app = create(service).application
     with pytest.raises((InvalidTransitionError, TransitionNotAuthorizedError)):
         move(service, app.application_id, target, A.AGENT)
-    unchanged = service.get_application(
-        actor_id="agent-a", application_id=app.application_id, correlation_id=CORR
-    )
+    unchanged = service.snapshot(app.application_id)
     assert unchanged.status is S.DRAFT
 
 
@@ -304,9 +341,7 @@ def test_failed_audit_write_rolls_back_the_status_change(
         move(service, app.application_id, S.AWAITING_AUTHORIZATION, A.SYSTEM_POLICY)
     monkeypatch.undo()
 
-    current = service.get_application(
-        actor_id="agent-a", application_id=app.application_id, correlation_id=CORR
-    )
+    current = service.snapshot(app.application_id)
     assert (current.status, current.version) == (S.DRAFT, 1)  # no change without its audit event
     assert [e.event_type for e in service.audit_trail(app.application_id)] == [
         "application.created"
@@ -365,7 +400,7 @@ def test_unique_constraint_stops_a_duplicate_when_the_idempotency_check_raced(
     assert loser.replayed is True
     assert loser.application == winner
     assert (count(engine, "applications"), count(engine, "idempotency_records")) == (1, 1)
-    assert count(engine, "audit_events") == 1  # the losing attempt left nothing behind
+    assert application_events(engine) == 1  # the losing attempt left nothing behind
 
 
 def test_unique_constraint_race_with_a_different_body_is_a_conflict_not_a_second_draft(
@@ -399,9 +434,7 @@ def test_compare_and_set_stops_a_lost_update_when_the_status_read_raced(
         move(service, app.application_id, S.CANCELLED, A.CUSTOMER_CHANNEL)
     monkeypatch.undo()
 
-    final = service.get_application(
-        actor_id="agent-a", application_id=app.application_id, correlation_id=CORR
-    )
+    final = service.snapshot(app.application_id)
     assert (final.status, final.version) == (
         S.AWAITING_AUTHORIZATION,
         2,
@@ -418,9 +451,7 @@ def test_version_counter_catches_an_aba_change_the_status_check_alone_would_miss
     app = create(service).application
     for target, authority in HAPPY_PATH[:3]:  # ... -> KYC_PENDING
         move(service, app.application_id, target, authority)
-    snapshot = service.get_application(
-        actor_id="agent-a", application_id=app.application_id, correlation_id=CORR
-    )
+    snapshot = service.snapshot(app.application_id)
     assert snapshot.status is S.KYC_PENDING
     # Meanwhile another writer parks the application and resumes it: the status is KYC_PENDING
     # again (A -> B -> A), but it is a different version of the record.
@@ -457,7 +488,7 @@ def test_concurrent_identical_creates_yield_exactly_one_application(
     assert sorted(r.replayed for r in results) == [False] + [True] * 7  # type: ignore[union-attr]
     assert count(engine, "applications") == 1
     assert count(engine, "idempotency_records") == 1
-    assert count(engine, "audit_events") == 1
+    assert application_events(engine) == 1
 
 
 def test_concurrent_creates_with_the_same_key_but_different_bodies_allow_only_one(
@@ -496,9 +527,7 @@ def test_concurrent_transitions_let_exactly_one_writer_win(
     losers = [r for r in results if isinstance(r, Exception)]
     assert len(winners) == 1
     assert all(isinstance(e, ConflictError) for e in losers), losers  # 409, never a 500
-    final = service.get_application(
-        actor_id="agent-a", application_id=app.application_id, correlation_id=CORR
-    )
+    final = service.snapshot(app.application_id)
     assert (final.status, final.version) == (S.AWAITING_AUTHORIZATION, 2)
     successes = [
         e
@@ -517,9 +546,7 @@ def test_two_conflicting_concurrent_transitions_always_end_in_a_valid_chain(
 
     assert all(not isinstance(r, Exception) or isinstance(r, ConflictError) for r in results)
     successes = [r for r in results if not isinstance(r, Exception)]
-    final = service.get_application(
-        actor_id="agent-a", application_id=app.application_id, correlation_id=CORR
-    )
+    final = service.snapshot(app.application_id)
     assert final.version == 1 + len(successes)
     # Both ran: DRAFT -> AWAITING_AUTHORIZATION -> CANCELLED. One ran: that writer's target.
     # (CANCELLED -> AWAITING_AUTHORIZATION is impossible, so no other combination exists.)

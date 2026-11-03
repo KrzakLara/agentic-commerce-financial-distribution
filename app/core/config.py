@@ -55,18 +55,24 @@ class Settings(BaseSettings):
     llm_base_url: str | None = None
     llm_api_key: SecretStr | None = None
 
-    # DEV/TEST ONLY stand-in for real scoped authentication (planned for Phase 03). Lets a
-    # caller name its own actor via the X-Dev-Actor-Id header. It is never honoured in
-    # production (see `dev_actor_auth_active`); without it every /v1 route answers 401.
-    dev_actor_auth_enabled: bool = True
+    # DEV/TEST ONLY: the trusted bootstrap (`python -m scripts.dev_auth`, the demo, tests) may
+    # issue an agent's first, narrow grant. There is NO HTTP endpoint for it. Agents always
+    # authenticate with `Authorization: Bearer <token>`; the Phase 02 X-Dev-Actor-Id header is
+    # gone. Never active in production (see `dev_agent_bootstrap_active`): production has no
+    # way to issue agent tokens, so every protected /v1 route answers 401 (fail closed).
+    dev_agent_bootstrap_enabled: bool = True
     # DEV/TEST ONLY simulated *customer* sign-in (X-Dev-Customer-Id header / dev sign-in page).
-    # Separate from the agent context above. Not digital identity verification; never active
-    # in production.
+    # Separate from the agent credentials above. Not digital identity verification; never
+    # active in production.
     dev_customer_auth_enabled: bool = True
 
-    # Lifetimes (seconds) of the customer handoff challenge and the onboarding mandate.
+    # Lifetimes (seconds): customer handoff challenge, onboarding grant (+ its token), agent
+    # bootstrap grant, read-only status grant, customer session on the bank-controlled pages.
     handoff_ttl_seconds: int = Field(default=600, ge=30, le=3600)
     mandate_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+    agent_bootstrap_ttl_seconds: int = Field(default=900, ge=60, le=3600)
+    agent_status_ttl_seconds: int = Field(default=86400, ge=300, le=604800)
+    customer_session_ttl_seconds: int = Field(default=900, ge=60, le=3600)
 
     # Shared secret for the MOCK depot provider's signed confirmation callback. Unset (the
     # default) disables the callback endpoint. Refused in production: the mock provider is a
@@ -105,7 +111,7 @@ class Settings(BaseSettings):
                 raise ValueError("debug must be false in production")
             if "*" in self.allowed_origins:
                 raise ValueError("wildcard CORS origin is not allowed in production")
-            for flag in ("dev_actor_auth_enabled", "dev_customer_auth_enabled"):
+            for flag in ("dev_agent_bootstrap_enabled", "dev_customer_auth_enabled"):
                 if getattr(self, flag) and flag in self.model_fields_set:
                     raise ValueError(f"{flag} must not be set in production")
             if self.mock_provider_callback_secret is not None:
@@ -120,9 +126,9 @@ class Settings(BaseSettings):
         return self
 
     @property
-    def dev_actor_auth_active(self) -> bool:
+    def dev_agent_bootstrap_active(self) -> bool:
         """True only outside production, no matter how the flag is configured."""
-        return self.dev_actor_auth_enabled and self.environment is not Environment.PRODUCTION
+        return self.dev_agent_bootstrap_enabled and self.environment is not Environment.PRODUCTION
 
     @property
     def dev_customer_auth_active(self) -> bool:

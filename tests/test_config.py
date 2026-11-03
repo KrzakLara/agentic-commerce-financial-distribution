@@ -80,12 +80,41 @@ def test_get_settings_is_cached() -> None:
     get_settings.cache_clear()
 
 
-def test_dev_actor_identification_is_never_active_in_production() -> None:
+def test_dev_agent_bootstrap_is_never_active_in_production() -> None:
     dev = make(environment="development")
-    assert dev.dev_actor_auth_enabled and dev.dev_actor_auth_active
+    assert dev.dev_agent_bootstrap_enabled and dev.dev_agent_bootstrap_active
     prod = make(environment="production")  # default value is ignored in production
-    assert prod.dev_actor_auth_enabled and not prod.dev_actor_auth_active
-    with pytest.raises(ValidationError, match="dev_actor_auth_enabled"):
-        make(environment="production", dev_actor_auth_enabled=True)  # explicit opt-in is refused
-    assert not make(environment="production", dev_actor_auth_enabled=False).dev_actor_auth_active
-    assert not make(environment="test", dev_actor_auth_enabled=False).dev_actor_auth_active
+    assert prod.dev_agent_bootstrap_enabled and not prod.dev_agent_bootstrap_active
+    with pytest.raises(ValidationError, match="dev_agent_bootstrap_enabled"):
+        make(environment="production", dev_agent_bootstrap_enabled=True)  # opt-in is refused
+    off = make(environment="production", dev_agent_bootstrap_enabled=False)
+    assert not off.dev_agent_bootstrap_active
+    assert not make(
+        environment="test", dev_agent_bootstrap_enabled=False
+    ).dev_agent_bootstrap_active
+
+
+def test_the_phase02_dev_actor_switch_no_longer_exists() -> None:
+    assert "dev_actor_auth_enabled" not in Settings.model_fields  # X-Dev-Actor-Id is gone
+    assert not hasattr(make(), "dev_actor_auth_active")
+
+
+def test_customer_sign_in_is_never_active_in_production() -> None:
+    assert make(environment="development").dev_customer_auth_active
+    assert not make(environment="production").dev_customer_auth_active
+    with pytest.raises(ValidationError, match="dev_customer_auth_enabled"):
+        make(environment="production", dev_customer_auth_enabled=True)
+
+
+@pytest.mark.parametrize(
+    ("field", "too_small", "too_large"),
+    [
+        ("agent_bootstrap_ttl_seconds", 59, 3601),
+        ("agent_status_ttl_seconds", 299, 604801),
+        ("customer_session_ttl_seconds", 59, 3601),
+    ],
+)
+def test_credential_lifetimes_are_bounded(field: str, too_small: int, too_large: int) -> None:
+    for value in (too_small, too_large):
+        with pytest.raises(ValidationError):
+            make(**{field: value})

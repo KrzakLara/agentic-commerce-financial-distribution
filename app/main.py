@@ -1,6 +1,5 @@
 """FastAPI application factory and ASGI entry point (`app.main:app`)."""
 
-import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -23,19 +22,25 @@ An external AI agent may *propose* actions; deterministic bank-side policy decid
 customer authorizes through a bank-controlled channel, and only a trusted depot provider
 confirmation can open a depot.
 
-**Phase 02 - simulated end-to-end onboarding.** Verified fixture discovery, idempotent draft
-creation, a customer handoff confirmed on a separate bank-controlled page, deterministic
-policy checks, `submit`, and a signed MOCK depot-provider confirmation as the only path to
-`OPENED`. Agent and customer identification are DEV/TEST stand-ins (`X-Dev-Actor-Id`,
-`X-Dev-Customer-Id`), not authentication. KYC, compliance, contract signing and the depot
-provider are MOCK, never real financial operations.
+**Phase 03 - scoped agent authorization.** Agent routes require `Authorization: Bearer
+<token>`: opaque, short-lived, server-side tokens (stored as hashes) with issuer, audience,
+expiry, `jti`, revocation, resource binding and one scope per operation. The first, narrow
+token comes from a trusted DEV bootstrap (no HTTP endpoint); `POST /v1/applications` returns
+the application-bound tokens. This is a CONTROLLED DEVELOPMENT authorization implementation,
+not production OAuth 2.0 / FAPI 2.0. The customer confirms separately on the bank-controlled
+page (DEV-simulated sign-in with a server-side session and CSRF protection). Only a signed MOCK
+depot-provider confirmation can set `OPENED`; it revokes the onboarding credentials. KYC,
+compliance, contract signing and the depot provider are MOCK, never real financial operations.
 """
 
 OPENAPI_TAGS = [
     {"name": "health", "description": "Liveness / readiness information."},
     {"name": "discovery", "description": "Verified (fixture) provider and product metadata."},
     {"name": "applications", "description": "Agent-facing draft, handoff, submit and status."},
-    {"name": "customer", "description": "Bank-controlled customer confirmation (DEV sign-in)."},
+    {
+        "name": "customer",
+        "description": "Bank-controlled customer confirmation (DEV-simulated sign-in).",
+    },
 ]
 
 
@@ -49,10 +54,13 @@ def create_app(settings: Settings | None = None, container: AppContainer | None 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         init_database(engine)
-        if settings.dev_actor_auth_active:
+        if settings.dev_agent_bootstrap_active:
             logger.warning(
-                "DEV actor identification (X-Dev-Actor-Id) is ACTIVE - this is not authentication"
+                "DEV agent bootstrap issuance is enabled (trusted CLI only, no HTTP endpoint) - "
+                "controlled development authorization, not production OAuth/FAPI"
             )
+        if settings.dev_customer_auth_active:
+            logger.warning("DEV simulated customer sign-in is ACTIVE - not identity verification")
         logger.info(
             "application startup",
             extra={
@@ -78,8 +86,6 @@ def create_app(settings: Settings | None = None, container: AppContainer | None 
     app.state.settings = settings
     # Fails fast (CatalogIntegrityError) if the verified catalog fixture was tampered with.
     app.state.container = container or build_default_container(settings)
-    # Signs the DEV-only customer sign-in cookie; random per process, so sessions die on restart.
-    app.state.dev_session_key = secrets.token_bytes(32)
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
 

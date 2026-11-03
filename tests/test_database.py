@@ -41,6 +41,8 @@ def test_init_database_creates_the_full_schema_and_is_idempotent(tmp_path: Path)
         # Phase 02
         "mandates", "handoffs", "consent_receipts", "disclosure_receipts",
         "check_results", "depot_submissions",
+        # Phase 03
+        "agent_access_tokens", "customer_sessions",
     }  # fmt: skip
     assert set(Base.metadata.tables) == tables
     with engine.connect() as connection:

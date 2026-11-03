@@ -38,10 +38,28 @@ agents -> integrations.agent_tools ONLY (+ core.config for the factory)
 ## Request flow (Phase 01)
 
 ```text
-agent (T0b) -> ScriptedCustomerAgent -> RestAgentToolGateway --HTTP--> FastAPI route (T1)
-   -> actor dependency (DEV/TEST) -> ApplicationService (T2) -> UnitOfWork -> SQLite
+agent (T0b) -> ScriptedCustomerAgent -> RestAgentToolGateway (+ AgentCredentials) --HTTP Bearer-->
+   FastAPI route (T1) -> api/auth.py: authenticate token + require scope
+   -> ApplicationService / OnboardingService (T2): resource binding, active grant, policy
+   -> UnitOfWork -> SQLite
 ```
 Routes return API schemas built from domain models; ORM rows never leave `repositories/`.
+(Phase 01/02 used a DEV `X-Dev-Actor-Id` header at the second step; Phase 03 removed it.)
+
+## Phase 03 additions
+
+* `services/authorization_service.py` - issue (trusted bootstrap only), verify and revoke opaque
+  scoped bearer tokens; `domain/mandate.py` - grant kinds, scopes, `AgentAccessToken`.
+* `api/auth.py` - `Authorization: Bearer` dependency and one scope per route.
+* `services/customer_session_service.py`, `api/customer_auth.py` - server-side customer
+  sessions, session-bound CSRF tokens; `api/routes/customer.py` refuses agent credentials.
+* `integrations/agent_credentials.py` - the agent runtime's token store (tokens never reach tool
+  results).
+* `repositories/database.py` - schema version 3 with a resumable v2 -> v3 upgrade.
+* `scripts/dev_auth.py` - trusted dev bootstrap CLI; `scripts/security_mutations.py` - targeted
+  mutation testing of the security controls.
+
+Details: [authorization.md](authorization.md).
 
 ## Phase 02 additions
 
@@ -75,4 +93,5 @@ Full sequence, transitions and limitations: [onboarding-flow.md](onboarding-flow
 | Ports for discovery, KYC, compliance, contract, depot, audit, agent tools | Interfaces |
 | MOCK KYC / compliance / contract / depot adapters | Fixed deterministic stubs, marked `mock=True` |
 | `ScriptedCustomerAgent` + gateway contract | Tested with a fake gateway (Phase 00) and over REST (Phase 01) |
-| Token-level scoped mandates (audience/jti verification per request), real customer authentication | **Not yet** (Phase 03+) |
+| Token-level scoped mandates (issuer/audience/expiry/jti/revocation/scope/binding per request) | **Implemented in Phase 03** (controlled DEV authorization, not OAuth/FAPI) |
+| Real customer authentication (eID / EUDI wallet / bank SCA) | **Not built** - DEV simulation only |

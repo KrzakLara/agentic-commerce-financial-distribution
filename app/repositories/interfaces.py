@@ -4,6 +4,7 @@ Repositories never commit. The unit of work owns the transaction, so a business 
 (e.g. status change + audit event) is atomic.
 """
 
+from collections.abc import Iterable
 from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self
@@ -11,10 +12,11 @@ from typing import Protocol, Self
 from app.domain.application import DepotApplication
 from app.domain.audit import AuditEvent
 from app.domain.checks import CheckRecord, DepotSubmissionRecord
-from app.domain.enums import ApplicationStatus, CheckType
+from app.domain.customer_session import CustomerSession
+from app.domain.enums import ApplicationStatus, CheckType, MandateKind
 from app.domain.handoff import Handoff
 from app.domain.idempotency import IdempotencyRecord
-from app.domain.mandate import Mandate
+from app.domain.mandate import AgentAccessToken, Mandate
 from app.domain.receipts import ConsentReceipt, DisclosureReceipt
 
 
@@ -61,11 +63,55 @@ class AuditRepository(Protocol):
 class MandateRepository(Protocol):
     def add(self, mandate: Mandate) -> None: ...
 
-    def get_for_application(self, application_id: str) -> Mandate | None: ...
+    def get(self, mandate_id: str) -> Mandate | None: ...
 
-    def revoke(self, application_id: str, at: datetime) -> bool:
-        """Mark the mandate of the application revoked. False if absent or already revoked."""
+    def get_for_application(
+        self, application_id: str, kind: MandateKind = MandateKind.ONBOARDING
+    ) -> Mandate | None:
+        """The application's grant of `kind` (at most one per kind)."""
         ...
+
+    def bind_bootstrap(self, mandate_id: str, application_id: str) -> bool:
+        """Single-use compare-and-set binding of a bootstrap grant to its new application."""
+        ...
+
+    def revoke(self, mandate_id: str, at: datetime) -> bool:
+        """Revoke one grant. False if absent or already revoked."""
+        ...
+
+    def revoke_for_application(
+        self, application_id: str, kinds: Iterable[MandateKind], at: datetime
+    ) -> int:
+        """Revoke the application's live grants of the given kinds; returns how many."""
+        ...
+
+
+class AgentTokenRepository(Protocol):
+    """Stores token HASHES only. Raises `IntegrityError` on a duplicate jti or hash."""
+
+    def add(self, token: AgentAccessToken) -> None: ...
+
+    def get_by_hash(self, token_hash: str) -> AgentAccessToken | None: ...
+
+    def get(self, jti: str) -> AgentAccessToken | None: ...
+
+    def revoke(self, jti: str, at: datetime) -> bool: ...
+
+    def revoke_for_mandate(self, mandate_id: str, at: datetime) -> int: ...
+
+    def revoke_for_application(
+        self, application_id: str, kinds: Iterable[MandateKind], at: datetime
+    ) -> int: ...
+
+
+class CustomerSessionRepository(Protocol):
+    """Stores session-secret HASHES only."""
+
+    def add(self, customer_session: CustomerSession) -> None: ...
+
+    def get_by_hash(self, secret_hash: str) -> CustomerSession | None: ...
+
+    def revoke(self, session_id: str, at: datetime) -> bool: ...
 
 
 class HandoffRepository(Protocol):
@@ -120,6 +166,8 @@ class UnitOfWork(Protocol):
     idempotency: IdempotencyRepository
     audit: AuditRepository
     mandates: MandateRepository
+    agent_tokens: AgentTokenRepository
+    customer_sessions: CustomerSessionRepository
     handoffs: HandoffRepository
     receipts: ReceiptRepository
     checks: CheckRepository

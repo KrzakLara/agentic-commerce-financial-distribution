@@ -16,7 +16,7 @@ from app.integrations.provider_callback import (
     sign,
     verify,
 )
-from tests.flow import CALLBACK_PATH, INTENT, PROVIDER_SECRET, Flow, agent_headers
+from tests.flow import CALLBACK_PATH, INTENT, PROVIDER_SECRET, Flow
 
 SECRET = b"unit-test-secret"
 NOW = 1_800_000_000.0
@@ -121,7 +121,10 @@ def test_a_valid_confirmation_opens_the_application_and_revokes_the_mandate(flow
 
     assert flow.status_of(app_id) == "OPENED"
     assert flow.agent_state(app_id) == "OPENED"
-    ((revoked,),) = flow.sql("SELECT revoked_at FROM mandates WHERE application_id = :a", a=app_id)
+    ((revoked,),) = flow.sql(
+        "SELECT revoked_at FROM mandates WHERE application_id = :a AND kind = 'onboarding'",
+        a=app_id,
+    )
     assert revoked is not None  # the onboarding mandate ended with the workflow
 
     opened = [e for e in flow.audit(app_id) if e.details.get("to") == "OPENED"]
@@ -166,7 +169,7 @@ def test_the_agents_credentials_cannot_stand_in_for_the_providers_signature(flow
     response = flow.agent_http.post(
         CALLBACK_PATH,
         content=cb.body,
-        headers={**agent_headers(), "Content-Type": "application/json"},
+        headers={**flow.onboarding_headers(app_id), "Content-Type": "application/json"},
     )
     assert response.status_code == 401
     assert flow.status_of(app_id) == "SUBMITTED_TO_DEPOT_PROVIDER"

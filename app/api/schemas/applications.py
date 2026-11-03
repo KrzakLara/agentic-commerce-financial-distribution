@@ -7,6 +7,7 @@ compliance detail) are never part of the response.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -14,6 +15,7 @@ from app.domain.application import DepotApplication
 from app.domain.base import OpaqueId
 from app.domain.visibility import AgentVisibleState, to_agent_visible_state
 from app.services.application_service import CreateApplicationCommand
+from app.services.authorization_service import ApplicationCredentials, IssuedToken
 
 
 class CreateApplicationRequest(BaseModel):
@@ -54,3 +56,53 @@ class ApplicationResponse(BaseModel):
             created_at=application.created_at,
             updated_at=application.updated_at,
         )
+
+
+class AgentTokenView(BaseModel):
+    """One application-bound bearer token, shown ONCE (the bank keeps only its hash)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    access_token: str
+    token_type: Literal["Bearer"] = "Bearer"  # noqa: S105 - OAuth token type name, not a secret
+    scope: str = Field(description="Space-delimited scopes (RFC 6749 section 3.3).")
+    expires_at: datetime
+
+    @classmethod
+    def from_issued(cls, issued: IssuedToken) -> "AgentTokenView":
+        return cls(
+            access_token=issued.token,
+            scope=" ".join(sorted(scope.value for scope in issued.scopes)),
+            expires_at=issued.expires_at,
+        )
+
+
+class ApplicationAuthorizationView(BaseModel):
+    """The credentials the bank grants for exactly this application (Phase 03)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    onboarding: AgentTokenView = Field(
+        description="`request_handoff submit_after_consent`; revoked at OPENED / terminal end."
+    )
+    status: AgentTokenView = Field(
+        description="`read_status` only; outlives the onboarding until it expires."
+    )
+
+    @classmethod
+    def from_credentials(
+        cls, credentials: ApplicationCredentials
+    ) -> "ApplicationAuthorizationView":
+        return cls(
+            onboarding=AgentTokenView.from_issued(credentials.onboarding),
+            status=AgentTokenView.from_issued(credentials.status),
+        )
+
+
+class ApplicationCreatedResponse(ApplicationResponse):
+    """Create response: the application plus - on first creation only - its tokens.
+
+    An idempotent replay returns `authorization: null`: tokens are never minted twice.
+    """
+
+    authorization: ApplicationAuthorizationView | None

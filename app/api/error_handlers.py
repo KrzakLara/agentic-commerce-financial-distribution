@@ -25,22 +25,25 @@ def _json_error(
     code: str,
     message: str,
     details: list[ErrorDetail] | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     correlation_id = _correlation_id(request)
     body = ErrorResponse(
         error=ErrorBody(code=code, message=message, correlation_id=correlation_id, details=details)
     )
-    headers = {CORRELATION_HEADER: correlation_id} if correlation_id else None
+    headers = dict(extra_headers or {})
+    if correlation_id:
+        headers[CORRELATION_HEADER] = correlation_id
     return JSONResponse(
         status_code=status_code,
         content=body.model_dump(mode="json", exclude_none=True),
-        headers=headers,
+        headers=headers or None,
     )
 
 
 async def _app_error_handler(request: Request, exc: Exception) -> JSONResponse:
     err = cast(AppError, exc)
-    return _json_error(request, err.status_code, err.code, err.message)
+    return _json_error(request, err.status_code, err.code, err.message, extra_headers=err.headers)
 
 
 async def _http_exception_handler(request: Request, exc: Exception) -> JSONResponse:

@@ -9,6 +9,8 @@ must be safe to show to an untrusted caller: no compliance detail, no internals.
 class AppError(Exception):
     status_code: int = 400
     code: str = "app_error"
+    # Extra response headers (e.g. the RFC 6750 `WWW-Authenticate` challenge). Never secrets.
+    headers: dict[str, str] | None = None
 
     def __init__(self, message: str | None = None) -> None:
         self.message = message or self.__class__.default_message()
@@ -55,6 +57,41 @@ class AuthenticationRequiredError(AppError):
     @classmethod
     def default_message(cls) -> str:
         return "Authentication is required."
+
+
+AGENT_BEARER_REALM = "trusteq-agent-api"
+
+
+class AgentAuthenticationRequiredError(AuthenticationRequiredError):
+    """No agent bearer token was presented (RFC 6750: challenge without an error code)."""
+
+    headers = {"WWW-Authenticate": f'Bearer realm="{AGENT_BEARER_REALM}"'}
+
+
+class InvalidTokenError(AuthenticationRequiredError):
+    """The presented bearer token is unknown, malformed, expired, revoked, or was issued by
+    another issuer or for another audience. Deliberately ONE answer for all of these: the
+    precise reason is audited, never returned."""
+
+    code = "invalid_token"
+    headers = {"WWW-Authenticate": f'Bearer realm="{AGENT_BEARER_REALM}", error="invalid_token"'}
+
+    @classmethod
+    def default_message(cls) -> str:
+        return "The access token is invalid, expired or revoked."
+
+
+class InsufficientScopeError(PolicyDeniedError):
+    """A valid token, but its scopes do not cover the requested operation."""
+
+    code = "insufficient_scope"
+    headers = {
+        "WWW-Authenticate": f'Bearer realm="{AGENT_BEARER_REALM}", error="insufficient_scope"'
+    }
+
+    @classmethod
+    def default_message(cls) -> str:
+        return "The access token does not permit this operation."
 
 
 class InvalidTransitionError(ConflictError):

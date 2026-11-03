@@ -1,55 +1,71 @@
-"""DEV/TEST actor identification - NOT authentication.
+"""Agent authentication for the agent-facing API: opaque, scoped bearer tokens (Phase 03).
 
-Real scoped, short-lived mandates (audience, expiry, jti, revocation) are Phase 03. Until
-then the caller names its actor in the ``X-Dev-Actor-Id`` header so that ownership checks,
-idempotency scoping and audit attribution can be built and tested.
+Every protected agent route requires ``Authorization: Bearer <token>``. The token is verified
+server-side (hash lookup, issuer, audience, issued/expiry, revocation of the token AND of its
+grant) by `AuthorizationService.authenticate`; the route then demands one operation-specific
+scope; the service checks resource binding (the token's application) and the workflow policy.
 
-This is safe only because:
-* it is switched on by `Settings.dev_actor_auth_enabled` and is *never* active in
-  production (`Settings.dev_actor_auth_active`); in production every protected route
-  answers 401, i.e. the system fails closed;
-* it only ever yields an *agent* identity. It cannot represent a customer, an operator or a
-  depot provider, so it can never authorise a state transition.
+The Phase 02 ``X-Dev-Actor-Id`` header no longer exists: an agent cannot name itself.
+
+CONTROLLED DEVELOPMENT AUTHORIZATION: tokens come from a trusted dev/test bootstrap and from
+the bank on application creation. This is not production OAuth 2.0 / FAPI 2.0 (no
+authorization server, no client authentication, no sender-constrained tokens) - see
+docs/trust-boundaries.md for the production target.
 """
 
-import re
-from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import Depends
-from fastapi.security import APIKeyHeader
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.api.deps import SettingsDep
-from app.core.exceptions import AuthenticationRequiredError
+from app.api.deps import AuthorizationServiceDep, CorrelationIdDep
+from app.domain.enums import MandateScope
+from app.domain.mandate import AGENT_API_AUDIENCE
+from app.services.authorization_service import AgentPrincipal
 
-DEV_ACTOR_HEADER = "X-Dev-Actor-Id"
-_ACTOR_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
-
-_dev_actor_header = APIKeyHeader(
-    name=DEV_ACTOR_HEADER,
-    scheme_name="DevActorHeader",
+_bearer = HTTPBearer(
+    auto_error=False,  # missing/other schemes are answered by our own fail-closed 401
+    scheme_name="AgentBearer",
     description=(
-        "DEV/TEST ONLY. Names the calling agent actor. This is not authentication and is "
-        "disabled in production."
+        "Opaque, short-lived, scoped agent access token (controlled DEV authorization, not "
+        "production OAuth/FAPI). Obtain the first one from the trusted bootstrap "
+        "(`python -m scripts.dev_auth bootstrap`); application-bound tokens are returned by "
+        "POST /v1/applications."
     ),
-    auto_error=False,
 )
 
 
-@dataclass(frozen=True)
-class AgentActorContext:
-    agent_actor_id: str
-    is_dev_actor: bool = True  # always True until Phase 03 introduces real mandates
+def get_current_agent(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    authorization: AuthorizationServiceDep,
+    correlation_id: CorrelationIdDep,
+) -> AgentPrincipal:
+    raw = credentials.credentials if credentials is not None else None
+    return authorization.authenticate(
+        raw, audience=AGENT_API_AUDIENCE, correlation_id=correlation_id
+    )
 
 
-def get_current_agent_actor(
-    settings: SettingsDep, header_value: Annotated[str | None, Depends(_dev_actor_header)]
-) -> AgentActorContext:
-    if not settings.dev_actor_auth_active:
-        raise AuthenticationRequiredError()
-    if header_value is None or not _ACTOR_ID.fullmatch(header_value):
-        raise AuthenticationRequiredError()
-    return AgentActorContext(agent_actor_id=header_value)
+CurrentAgent = Annotated[AgentPrincipal, Depends(get_current_agent)]
 
 
-CurrentAgentActor = Annotated[AgentActorContext, Depends(get_current_agent_actor)]
+def require_scope(scope: MandateScope) -> Callable[..., AgentPrincipal]:
+    """Dependency factory: a verified agent whose token carries `scope` (else 403, audited)."""
+
+    def dependency(
+        principal: CurrentAgent,
+        authorization: AuthorizationServiceDep,
+        correlation_id: CorrelationIdDep,
+    ) -> AgentPrincipal:
+        authorization.require_scope(principal, scope, correlation_id=correlation_id)
+        return principal
+
+    dependency.__name__ = f"require_scope_{scope.value}"
+    return dependency
+
+
+CanCreateDraft = Annotated[AgentPrincipal, Depends(require_scope(MandateScope.CREATE_DRAFT))]
+CanReadStatus = Annotated[AgentPrincipal, Depends(require_scope(MandateScope.READ_STATUS))]
+CanRequestHandoff = Annotated[AgentPrincipal, Depends(require_scope(MandateScope.REQUEST_HANDOFF))]
+CanSubmit = Annotated[AgentPrincipal, Depends(require_scope(MandateScope.SUBMIT_AFTER_CONSENT))]

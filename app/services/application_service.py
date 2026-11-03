@@ -1,8 +1,13 @@
 """Application workflow service (trust zone T2).
 
-All business rules for creating applications, reading them on behalf of an actor and moving
-them through the state machine live here. Every operation is one unit of work, so state
-changes, idempotency records and audit events commit together or not at all.
+All business rules for creating applications, reading them on behalf of an authorized agent
+and moving them through the state machine live here. Every operation is one unit of work, so
+state changes, idempotency records, authorization grants and audit events commit together or
+not at all.
+
+Phase 03: every agent-facing operation takes an `AgentPrincipal` (a verified bearer token),
+never a self-asserted actor id. Creation consumes a bootstrap grant; reading requires a token
+bound to exactly that application.
 """
 
 import hashlib
@@ -17,9 +22,11 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import (
+    AppError,
     ConcurrentModificationError,
     IdempotencyConflictError,
     InvalidTransitionError,
+    MandateInactiveError,
     NotFoundError,
     TransitionNotAuthorizedError,
     UnverifiedReferenceError,
@@ -27,9 +34,15 @@ from app.core.exceptions import (
 from app.domain.application import DepotApplication
 from app.domain.audit import AuditEvent
 from app.domain.base import DomainModel, OpaqueId
-from app.domain.enums import ApplicationStatus, AuditActorType, AuditOutcome, MandateScope
+from app.domain.enums import (
+    ApplicationStatus,
+    AuditActorType,
+    AuditOutcome,
+    MandateKind,
+    MandateScope,
+)
 from app.domain.idempotency import IdempotencyRecord
-from app.domain.mandate import Mandate
+from app.domain.mandate import AGENT_API_AUDIENCE
 from app.domain.workflow import (
     TERMINAL_STATES,
     TransitionAuthority,
@@ -39,18 +52,15 @@ from app.domain.workflow import (
 from app.integrations.catalog_fixture import FixtureProviderDiscovery
 from app.integrations.ports import ProviderDiscoveryPort
 from app.repositories.interfaces import UnitOfWork
+from app.services.authorization_service import (
+    REVOKED_AT_COMPLETION,
+    AgentPrincipal,
+    ApplicationCredentials,
+    AuthorizationService,
+)
 
 OPERATION_CREATE_APPLICATION = "create_application"
-MANDATE_AUDIENCE = "trusteq-onboarding-api"
-# Scopes of the per-application onboarding mandate (names mirror the agent tool set, ADR-09).
-ONBOARDING_SCOPES = frozenset(
-    {
-        MandateScope.CREATE_DRAFT,
-        MandateScope.REQUEST_HANDOFF,
-        MandateScope.READ_STATUS,
-        MandateScope.SUBMIT_AFTER_CONSENT,
-    }
-)
+MANDATE_AUDIENCE = AGENT_API_AUDIENCE  # kept for callers of the Phase 02 name
 _REASON_CODE = re.compile(r"^[a-z0-9_.]{1,64}$")
 
 _AUTHORITY_TO_ACTOR_TYPE = {
@@ -79,6 +89,9 @@ class CreateApplicationCommand(DomainModel):
 class CreateApplicationResult:
     application: DepotApplication
     replayed: bool  # True if an earlier request with the same key/body created it
+    # The application-bound tokens, ONLY on first creation. A replay never mints credentials:
+    # the bank stores token hashes, so it cannot show the originals again (see docs).
+    credentials: ApplicationCredentials | None = None
 
 
 class ApplicationService:
@@ -90,12 +103,26 @@ class ApplicationService:
         id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
         catalog: ProviderDiscoveryPort | None = None,
         mandate_ttl_seconds: int = 3600,
+        authorization: AuthorizationService | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._catalog: ProviderDiscoveryPort = catalog or FixtureProviderDiscovery()
         self._mandate_ttl = timedelta(seconds=mandate_ttl_seconds)
         self._clock = clock
         self._id_factory = id_factory
+        self._authz = authorization or AuthorizationService(
+            uow_factory, clock=clock, id_factory=id_factory
+        )
+
+    @property
+    def authorization(self) -> AuthorizationService:
+        return self._authz
+
+    def require_scope(
+        self, principal: AgentPrincipal, scope: MandateScope, correlation_id: str
+    ) -> None:
+        """Service-boundary scope check (defence in depth: the route checks it first)."""
+        self._authz.require_scope(principal, scope, correlation_id=correlation_id)
 
     # --- helpers ------------------------------------------------------------
 
@@ -136,14 +163,49 @@ class ApplicationService:
 
     # --- create (idempotent) ------------------------------------------------------------
 
+    def _deny_create(
+        self, uow: UnitOfWork, principal: AgentPrincipal, reason: str, correlation_id: str
+    ) -> AppError:
+        """Discard the attempt, audit the precise reason, return the generic 403."""
+        uow.rollback()
+        uow.audit.append(
+            self.new_event(
+                event_type="application.create_denied",
+                correlation_id=correlation_id,
+                actor_type=AuditActorType.AGENT,
+                actor_id=principal.agent_actor_id,
+                outcome=AuditOutcome.DENIED,
+                application_id=None,
+                details={"reason": reason, "mandate_id": principal.mandate_id},
+            )
+        )
+        uow.commit()
+        return MandateInactiveError()
+
     def create_application(
         self,
         *,
-        actor_id: str,
+        principal: AgentPrincipal,
         command: CreateApplicationCommand,
         idempotency_key: str,
         correlation_id: str,
     ) -> CreateApplicationResult:
+        """Create a DRAFT with a BOOTSTRAP grant, which this consumes (one application each).
+
+        The new application belongs to the grant's agent and must be for the grant's customer.
+        In the same transaction the bank issues the application-bound onboarding and status
+        grants. An idempotent replay (same agent, key and body) returns the application but no
+        new credentials.
+        """
+        self.require_scope(principal, MandateScope.CREATE_DRAFT, correlation_id)
+        actor_id = principal.agent_actor_id
+        if principal.mandate_kind is not MandateKind.BOOTSTRAP:
+            with self._uow_factory() as uow:
+                raise self._deny_create(uow, principal, "not_a_bootstrap_grant", correlation_id)
+        if command.customer_ref != principal.customer_id:
+            # The agent may only act for the customer that the trusted bootstrap named.
+            with self._uow_factory() as uow:
+                raise self._deny_create(uow, principal, "customer_not_covered", correlation_id)
         self._require_verified_references(command)
         request_hash = command.request_hash()
         now = self._clock()
@@ -159,20 +221,22 @@ class ApplicationService:
         )
         with self._uow_factory() as uow:
             if uow.idempotency.get(actor_id, OPERATION_CREATE_APPLICATION, idempotency_key) is None:
+                bootstrap = uow.mandates.get(principal.mandate_id)
+                if (
+                    bootstrap is None
+                    or bootstrap.kind is not MandateKind.BOOTSTRAP
+                    or bootstrap.agent_actor_id != actor_id
+                    or not bootstrap.is_active(now)
+                ):
+                    raise self._deny_create(uow, principal, "bootstrap_inactive", correlation_id)
+                if bootstrap.application_id is not None:
+                    raise self._deny_create(
+                        uow, principal, "bootstrap_already_used", correlation_id
+                    )
                 try:
                     uow.applications.add(application)
-                    mandate = Mandate(
-                        mandate_id=f"mdt-{self._id_factory()}",
-                        jti=f"jti-{self._id_factory()}",
-                        application_id=application.application_id,
-                        agent_actor_id=actor_id,
-                        customer_id=command.customer_ref,
-                        audience=MANDATE_AUDIENCE,
-                        scopes=ONBOARDING_SCOPES,
-                        issued_at=now,
-                        expires_at=now + self._mandate_ttl,
-                    )
-                    uow.mandates.add(mandate)
+                    # Before the binding: a concurrent request with the same key fails here
+                    # (UNIQUE) and becomes a replay instead of a "bootstrap already used".
                     uow.idempotency.add(
                         IdempotencyRecord(
                             actor_id=actor_id,
@@ -182,6 +246,16 @@ class ApplicationService:
                             application_id=application.application_id,
                             created_at=now,
                         )
+                    )
+                    if not uow.mandates.bind_bootstrap(
+                        principal.mandate_id, application.application_id
+                    ):
+                        # The same bootstrap grant created another application concurrently.
+                        raise self._deny_create(
+                            uow, principal, "bootstrap_already_used", correlation_id
+                        )
+                    onboarding, status, credentials = self._authz.grant_application_access(
+                        uow, application, onboarding_ttl=self._mandate_ttl, now=now
                     )
                     uow.audit.append(
                         self.new_event(
@@ -196,12 +270,20 @@ class ApplicationService:
                                 "product_id": command.product_id,
                                 "channel_id": command.channel_id,
                                 "status": ApplicationStatus.DRAFT.value,
-                                "mandate_id": mandate.mandate_id,
+                                "mandate_id": onboarding.mandate_id,
+                                "status_mandate_id": status.mandate_id,
+                                "bootstrap_mandate_id": principal.mandate_id,
+                                "token_jtis": [
+                                    credentials.onboarding.jti,
+                                    credentials.status.jti,
+                                ],
                             },
                         )
                     )
                     uow.commit()
-                    return CreateApplicationResult(application, replayed=False)
+                    return CreateApplicationResult(
+                        application, replayed=False, credentials=credentials
+                    )
                 except IntegrityError:
                     # A concurrent request with the same (actor, operation, key) won the race.
                     # The UNIQUE constraint rolled our whole attempt back; fall through to replay.
@@ -239,46 +321,56 @@ class ApplicationService:
             uow.commit()
         raise IdempotencyConflictError()
 
-    # --- read (actor-scoped) ------------------------------------------------------------
+    # --- read (token-scoped) ------------------------------------------------------------
 
     def get_application(
-        self, *, actor_id: str, application_id: str, correlation_id: str
+        self, *, principal: AgentPrincipal, application_id: str, correlation_id: str
     ) -> DepotApplication:
-        """Return the application only to the actor that owns it.
+        """Return the application only for a `read_status` token bound to exactly it.
 
-        Another actor's application is reported exactly like a missing one (404), so ids
-        cannot be probed; the attempt is audited.
+        Another actor's application - or another application of the same actor - is reported
+        exactly like a missing one (404), so ids cannot be probed; the attempt is audited.
         """
+        self.require_scope(principal, MandateScope.READ_STATUS, correlation_id)
         with self._uow_factory() as uow:
-            return self.load_owned(uow, actor_id, application_id, correlation_id)
+            return self.load_authorized(uow, principal, application_id, correlation_id)
 
-    def load_owned(
-        self, uow: UnitOfWork, actor_id: str, application_id: str, correlation_id: str
+    def load_authorized(
+        self,
+        uow: UnitOfWork,
+        principal: AgentPrincipal,
+        application_id: str,
+        correlation_id: str,
     ) -> DepotApplication:
-        """Load an application inside the caller's unit of work, only for its owner.
+        """Load an application inside the caller's unit of work - only if the verified
+        credential's agent OWNS it and the credential is BOUND to it (resource binding).
 
-        A foreign application is indistinguishable from a missing one (404); the attempt is
-        audited in its own committed transaction before the error is raised.
+        Both failures look like a missing application (404, IDOR-safe) and are audited in
+        their own committed transaction before the error is raised.
         """
         application = uow.applications.get(application_id)
         if application is None:
             raise NotFoundError()
-        if application.agent_actor_id != actor_id:
-            uow.rollback()
-            uow.audit.append(
-                self.new_event(
-                    event_type="application.access_denied",
-                    correlation_id=correlation_id,
-                    actor_type=AuditActorType.AGENT,
-                    actor_id=actor_id,
-                    outcome=AuditOutcome.DENIED,
-                    application_id=application_id,
-                    details={"reason": "not_owner"},
-                )
+        if application.agent_actor_id != principal.agent_actor_id:
+            reason = "not_owner"
+        elif principal.application_id != application_id:
+            reason = "outside_authorization"  # a token for another application of this agent
+        else:
+            return application
+        uow.rollback()
+        uow.audit.append(
+            self.new_event(
+                event_type="application.access_denied",
+                correlation_id=correlation_id,
+                actor_type=AuditActorType.AGENT,
+                actor_id=principal.agent_actor_id,
+                outcome=AuditOutcome.DENIED,
+                application_id=application_id,
+                details={"reason": reason, "jti": principal.jti},
             )
-            uow.commit()
-            raise NotFoundError()
-        return application
+        )
+        uow.commit()
+        raise NotFoundError()
 
     # --- state machine ------------------------------------------------------------
 
@@ -382,8 +474,19 @@ class ApplicationService:
             "reason_code": reason_code,
             "version": current.version + 1,
         }
-        if target in TERMINAL_STATES and uow.mandates.revoke(current.application_id, now):
-            details["mandate_revoked"] = True  # the onboarding mandate ends with the workflow
+        if target in TERMINAL_STATES:
+            # Atomic with the transition: every credential that could still ACT on this
+            # onboarding ends here - bootstrap + onboarding grants, their tokens, and any
+            # unused customer handoff. (The read-only status grant just expires.)
+            app_id = current.application_id
+            if uow.mandates.revoke_for_application(app_id, REVOKED_AT_COMPLETION, now):
+                details["mandate_revoked"] = True
+            tokens = uow.agent_tokens.revoke_for_application(app_id, REVOKED_AT_COMPLETION, now)
+            if tokens:
+                details["tokens_revoked"] = tokens
+            handoffs = uow.handoffs.revoke_active(app_id, now)
+            if handoffs:
+                details["handoffs_revoked"] = handoffs
         uow.audit.append(
             self.new_event(
                 event_type="application.transition",
@@ -401,6 +504,14 @@ class ApplicationService:
         return result
 
     # --- internal read model for operators/tests (never returned to the agent) ---------------
+
+    def snapshot(self, application_id: str) -> DepotApplication:
+        """Trusted internal read (operators, tests, recovery). No API route calls this."""
+        with self._uow_factory() as uow:
+            application = uow.applications.get(application_id)
+        if application is None:
+            raise NotFoundError()
+        return application
 
     def audit_trail(self, application_id: str) -> list[AuditEvent]:
         with self._uow_factory() as uow:

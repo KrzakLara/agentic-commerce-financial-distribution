@@ -7,6 +7,8 @@ from app.container import AppContainer
 from app.core.config import Settings
 from app.repositories.sqlalchemy_repositories import SqlAlchemyUnitOfWork
 from app.services.application_service import ApplicationService
+from app.services.authorization_service import AuthorizationService
+from app.services.customer_session_service import CustomerSessionService
 from app.services.onboarding_service import OnboardingService
 
 
@@ -26,8 +28,29 @@ def get_container(request: Request) -> AppContainer:
 ContainerDep = Annotated[AppContainer, Depends(get_container)]
 
 
-def get_application_service(
+def get_authorization_service(
     request: Request, settings: SettingsDep, container: ContainerDep
+) -> AuthorizationService:
+    session_factory = request.app.state.session_factory
+    return AuthorizationService(
+        lambda: SqlAlchemyUnitOfWork(session_factory),
+        clock=container.clock,
+        # The HTTP layer can only VERIFY tokens. Issuing a bootstrap grant (or re-issuing
+        # tokens) is a trusted operator action outside the API, whatever the configuration.
+        bootstrap_enabled=False,
+        bootstrap_ttl_seconds=settings.agent_bootstrap_ttl_seconds,
+        status_ttl_seconds=settings.agent_status_ttl_seconds,
+    )
+
+
+AuthorizationServiceDep = Annotated[AuthorizationService, Depends(get_authorization_service)]
+
+
+def get_application_service(
+    request: Request,
+    settings: SettingsDep,
+    container: ContainerDep,
+    authorization: AuthorizationServiceDep,
 ) -> ApplicationService:
     session_factory = request.app.state.session_factory
     return ApplicationService(
@@ -35,6 +58,7 @@ def get_application_service(
         clock=container.clock,
         catalog=container.catalog,
         mandate_ttl_seconds=settings.mandate_ttl_seconds,
+        authorization=authorization,
     )
 
 
@@ -62,6 +86,20 @@ def get_onboarding_service(
 
 
 OnboardingServiceDep = Annotated[OnboardingService, Depends(get_onboarding_service)]
+
+
+def get_customer_session_service(
+    request: Request, settings: SettingsDep, container: ContainerDep
+) -> CustomerSessionService:
+    session_factory = request.app.state.session_factory
+    return CustomerSessionService(
+        lambda: SqlAlchemyUnitOfWork(session_factory),
+        clock=container.clock,
+        ttl_seconds=settings.customer_session_ttl_seconds,
+    )
+
+
+CustomerSessionServiceDep = Annotated[CustomerSessionService, Depends(get_customer_session_service)]
 
 
 def get_correlation_id(request: Request) -> str:

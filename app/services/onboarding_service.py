@@ -8,10 +8,15 @@ with the correct `TransitionAuthority`, inside one unit of work together with it
 Nothing here reads an LLM output; every decision is a deterministic check. Denials are audited
 in their own committed transaction and then raised, so a refused attempt leaves a trace but no
 state change.
+
+Phase 03: agent operations take a verified `AgentPrincipal` (scope + resource binding are
+re-checked here, at the service boundary), and `submit` first resumes mandatory checks that an
+interrupted process left pending - bounded, idempotent, never repeating a recorded step.
 """
 
 import hashlib
 import hmac
+import logging
 import secrets
 import uuid
 from collections.abc import Callable
@@ -53,6 +58,7 @@ from app.domain.enums import (
     MandateScope,
 )
 from app.domain.handoff import ApprovedAction, Handoff
+from app.domain.mandate import Mandate
 from app.domain.receipts import ConsentReceipt, DisclosureReceipt
 from app.domain.workflow import TransitionAuthority as A
 from app.domain.workflow import check_transition
@@ -65,11 +71,29 @@ from app.integrations.ports import (
 )
 from app.repositories.interfaces import UnitOfWork
 from app.services.application_service import ApplicationService
+from app.services.authorization_service import AgentPrincipal
 from app.services.policy import (
+    PolicyDecision,
     evaluate_handoff_request,
     evaluate_submit,
     mandate_allows,
 )
+
+# Steps of the mandatory-check pipeline that a crashed process may leave behind.
+_RESUMABLE_CHECK_STATES = frozenset({S.AUTHORIZED, S.KYC_PENDING, S.COMPLIANCE_PENDING})
+logger = logging.getLogger("app.onboarding")
+
+
+def _grant_allows(
+    mandate: Mandate | None, principal: AgentPrincipal, scope: MandateScope, now: datetime
+) -> bool:
+    """The application's onboarding grant is active for `scope` AND is the very grant behind
+    the presented token (a token of another grant never borrows this one's authority)."""
+    return (
+        mandate_allows(mandate, scope, principal.agent_actor_id, now)
+        and mandate is not None
+        and mandate.mandate_id == principal.mandate_id
+    )
 
 
 class ProviderConfirmation(DomainModel):
@@ -199,12 +223,13 @@ class OnboardingService:
     # --- 1. agent requests a customer handoff ------------------------------------------------
 
     def request_handoff(
-        self, *, actor_id: str, application_id: str, correlation_id: str
+        self, *, principal: AgentPrincipal, application_id: str, correlation_id: str
     ) -> HandoffIssue:
         """Create the one-time, expiring, action-bound handoff. The agent only *requests* it."""
+        self._apps.require_scope(principal, MandateScope.REQUEST_HANDOFF, correlation_id)
         for attempt in (1, 2):
             try:
-                return self._request_handoff_once(actor_id, application_id, correlation_id)
+                return self._request_handoff_once(principal, application_id, correlation_id)
             except IntegrityError:
                 # A concurrent request created an active handoff at the same moment (partial
                 # unique index). Our transaction was rolled back; retry once against fresh data.
@@ -213,13 +238,18 @@ class OnboardingService:
         raise RuntimeError("unreachable")  # pragma: no cover
 
     def _request_handoff_once(
-        self, actor_id: str, application_id: str, correlation_id: str
+        self, principal: AgentPrincipal, application_id: str, correlation_id: str
     ) -> HandoffIssue:
         now = self._clock()
+        actor_id = principal.agent_actor_id
         with self._uow_factory() as uow:
-            application = self._apps.load_owned(uow, actor_id, application_id, correlation_id)
+            application = self._apps.load_authorized(uow, principal, application_id, correlation_id)
             mandate = uow.mandates.get_for_application(application_id)
             decision = evaluate_handoff_request(application, mandate, actor_id, now)
+            if decision.allowed and not _grant_allows(
+                mandate, principal, MandateScope.REQUEST_HANDOFF, now
+            ):
+                decision = PolicyDecision(("mandate_inactive",))
             if not decision.allowed:
                 error: AppError = (
                     MandateInactiveError()
@@ -312,6 +342,34 @@ class OnboardingService:
         if now >= handoff.expires_at:
             raise deny(HandoffExpiredError(), "expired")
         return handoff
+
+    def record_customer_channel_denial(
+        self,
+        *,
+        handoff_id: str,
+        actor_type: AuditActorType,
+        actor_id: str | None,
+        reason: str,
+        correlation_id: str,
+    ) -> None:
+        """Audit a refusal on the customer channel that never reached the ceremony itself
+        (e.g. an agent credential presented, a failed CSRF check). Unknown handoff: no-op."""
+        with self._uow_factory() as uow:
+            handoff = uow.handoffs.get(handoff_id)
+            if handoff is None:
+                return
+            uow.audit.append(
+                self._apps.new_event(
+                    event_type="handoff.rejected",
+                    correlation_id=correlation_id,
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    outcome=AuditOutcome.DENIED,
+                    application_id=handoff.application_id,
+                    details={"handoff_id": handoff_id, "reason": reason},
+                )
+            )
+            uow.commit()
 
     # --- 2a. customer reviews (read-only) ----------------------------------------------------
 
@@ -452,23 +510,30 @@ class OnboardingService:
         Each step is its own committed unit of work with its evidence, so an interruption
         leaves a well-defined state and re-running resumes where it stopped. Any outcome other
         than PASS parks the application in MANUAL_REVIEW (fail closed); it never advances.
+
+        Bounded (a fixed number of steps) and safe to run concurrently: a provider is only
+        called when no evidence for that check is recorded yet, and if another worker records
+        the evidence or takes the transition first, this run rolls back and re-reads.
         """
-        for _ in range(8):
-            with self._uow_factory() as uow:
-                application = uow.applications.get(application_id)
-                if application is None:
-                    raise NotFoundError()
-                if application.status is S.AUTHORIZED:
-                    self._step(uow, application, S.KYC_PENDING, "kyc_started", correlation_id)
-                elif application.status is S.KYC_PENDING:
-                    self._run_check(uow, application, CheckType.KYC, correlation_id)
-                elif application.status is S.COMPLIANCE_PENDING:
-                    self._run_check(uow, application, CheckType.COMPLIANCE, correlation_id)
-                elif application.status is S.CONTRACT_PENDING:
-                    self._record_contract(uow, application, correlation_id)
-                    return uow.applications.get(application_id) or application
-                else:
-                    return application
+        for _ in range(12):
+            try:
+                with self._uow_factory() as uow:
+                    application = uow.applications.get(application_id)
+                    if application is None:
+                        raise NotFoundError()
+                    if application.status is S.AUTHORIZED:
+                        self._step(uow, application, S.KYC_PENDING, "kyc_started", correlation_id)
+                    elif application.status is S.KYC_PENDING:
+                        self._run_check(uow, application, CheckType.KYC, correlation_id)
+                    elif application.status is S.COMPLIANCE_PENDING:
+                        self._run_check(uow, application, CheckType.COMPLIANCE, correlation_id)
+                    elif application.status is S.CONTRACT_PENDING:
+                        self._record_contract(uow, application, correlation_id)
+                        return uow.applications.get(application_id) or application
+                    else:
+                        return application
+            except (IntegrityError, ConcurrentModificationError):
+                continue  # lost a race with a concurrent run: re-read the committed state
         raise RuntimeError("advance_checks did not settle")  # pragma: no cover
 
     def _step(
@@ -542,15 +607,74 @@ class OnboardingService:
 
     # --- 4. agent submits after consent ------------------------------------------------------
 
-    def submit_application(
-        self, *, actor_id: str, application_id: str, correlation_id: str
-    ) -> SubmitResult:
-        """Hand the application to the depot provider - only if the policy gate allows it."""
+    def _resume_checks(self, application_id: str, resume_from: S, correlation_id: str) -> None:
+        """Run the unfinished mandatory checks once more. Fail closed: if a provider is still
+        unavailable the attempt is audited and the policy gate (no evidence) refuses submit."""
+        outcome = AuditOutcome.SUCCESS
+        try:
+            self.advance_checks(application_id, correlation_id)
+        except AppError:
+            raise
+        except Exception:  # an external provider failed: leave the durable state as it is
+            logger.warning(
+                "resuming mandatory checks failed", exc_info=True, extra={"app": application_id}
+            )
+            outcome = AuditOutcome.FAILURE
+        with self._uow_factory() as uow:
+            uow.audit.append(
+                self._apps.new_event(
+                    event_type="workflow.resumed",
+                    correlation_id=correlation_id,
+                    actor_type=AuditActorType.SYSTEM,
+                    actor_id=None,
+                    outcome=outcome,
+                    application_id=application_id,
+                    details={"from": resume_from.value, "trigger": "submit"},
+                )
+            )
+            uow.commit()
+
+    def _pending_resume(
+        self, principal: AgentPrincipal, application_id: str, correlation_id: str
+    ) -> S | None:
+        """The step to resume from, if the customer already approved but a crash left the
+        mandatory checks unfinished. None if there is nothing (allowed) to resume."""
         now = self._clock()
         with self._uow_factory() as uow:
-            application = self._apps.load_owned(uow, actor_id, application_id, correlation_id)
+            application = self._apps.load_authorized(uow, principal, application_id, correlation_id)
             mandate = uow.mandates.get_for_application(application_id)
-            if not mandate_allows(mandate, MandateScope.SUBMIT_AFTER_CONSENT, actor_id, now):
+            if not _grant_allows(mandate, principal, MandateScope.SUBMIT_AFTER_CONSENT, now):
+                return None  # the main path refuses (and audits) this request
+            if uow.receipts.get_consent(application_id) is None:
+                return None  # no stored customer approval: nothing may run on the agent's behalf
+            if application.status in _RESUMABLE_CHECK_STATES or (
+                application.status is S.CONTRACT_PENDING
+                and uow.checks.get(application_id, CheckType.CONTRACT) is None
+            ):
+                return application.status
+            return None
+
+    def submit_application(
+        self, *, principal: AgentPrincipal, application_id: str, correlation_id: str
+    ) -> SubmitResult:
+        """Hand the application to the depot provider - only if the policy gate allows it.
+
+        Recovery: if the process stopped after the customer's confirmation but before the
+        mandatory checks finished, they are resumed first (`advance_checks`: bounded,
+        idempotent, recorded evidence is reused, never re-requested). The policy gate then
+        decides on the evidence as usual; a check that does not pass still blocks submission.
+        """
+        self._apps.require_scope(principal, MandateScope.SUBMIT_AFTER_CONSENT, correlation_id)
+        resume_from = self._pending_resume(principal, application_id, correlation_id)
+        if resume_from is not None:
+            self._resume_checks(application_id, resume_from, correlation_id)
+
+        now = self._clock()
+        actor_id = principal.agent_actor_id
+        with self._uow_factory() as uow:
+            application = self._apps.load_authorized(uow, principal, application_id, correlation_id)
+            mandate = uow.mandates.get_for_application(application_id)
+            if not _grant_allows(mandate, principal, MandateScope.SUBMIT_AFTER_CONSENT, now):
                 raise self._deny(
                     uow,
                     MandateInactiveError(),

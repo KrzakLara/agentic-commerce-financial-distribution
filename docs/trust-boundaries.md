@@ -29,11 +29,31 @@ Trust is granted by evidence and controls, not by zone labels alone.
    invalid or replayed requests fail closed.
 5. **Complete** - agent receives only a coarse status; the mandate ends after completion.
 
-Phase 02 implements this ceremony in prototype form - see [onboarding-flow.md](onboarding-flow.md).
-The weak point is step 2: the customer authentication is a **DEV-only simulation**. Phase 03
-hardens the mandate/handoff claims.
+Phase 02 implements this ceremony in prototype form - see [onboarding-flow.md](onboarding-flow.md);
+Phase 03 hardens it (server-side customer sessions, CSRF tokens, agent credentials refused). The
+remaining weak point is step 2: the customer authentication itself is a **DEV-only simulation**.
 
-## Phase 01: how the boundaries are enforced so far
+## Phase 03: how the boundaries are enforced now
+
+| Boundary | Real, enforced and tested | Simulated / not production |
+|---|---|---|
+| T0b -> T1 (agent -> API) | `Authorization: Bearer` opaque token, SHA-256 hash lookup; issuer, audience, issued/expiry, revocation of token and grant; one scope per operation; resource binding (owner AND bound application, else 404); generic 401/403/404, precise reasons audited ([authorization.md](authorization.md)) | tokens come from a trusted DEV bootstrap, not an OAuth/FAPI authorization server; no client authentication, no sender-constrained tokens, no rate limiting |
+| Agent self-authorization | no HTTP endpoint issues, exchanges or widens tokens; grant/token claims immutable (DB triggers); a bootstrap grant creates ONE application for ONE named customer | - |
+| T1 -> T2 (API -> core) | services re-check scope, binding and the active onboarding grant inside the transaction; policy gate and state machine unchanged | - |
+| T0a (customer channel) | separate credential: server-side session (hashed secret, HttpOnly + SameSite=Strict + Secure on HTTPS, path `/customer`, server-enforced expiry, rotation on sign-in); CSRF token bound to session + handoff; login CSRF; `Sec-Fetch-Site` / `Origin` refusal; any `Authorization` header refused (audited) | the sign-in itself: anyone can type a customer id; the JSON ceremony's `X-Dev-Customer-Id` header |
+| T2 -> T3 (provider callback) | unchanged: HMAC signature, freshness, replay/duplicate checks; a bearer token never substitutes the signature | shared-secret MOCK credential instead of mutual TLS |
+| Completion | at any terminal state the bootstrap + onboarding grants, their tokens and open handoffs are revoked in the transition's transaction; the read-only status grant expires on its own | - |
+
+What the agent never receives, and how that is checked: customer session secrets (separate
+cookie on `/customer`, never sent to the agent; `tqs_` secrets are rejected on agent routes),
+signing authority (no tool, no route), provider callback secrets (never in any response or log),
+raw KYC/AML data and compliance rationale (generic states only; tested by
+`test_agent_facing_responses_never_expose_internal_or_compliance_detail`), and its own tokens are
+kept out of tool results so a model cannot see them.
+
+## Phase 01: how the boundaries were enforced (historical)
+
+Phase 03 replaced the `X-Dev-Actor-Id` header described below with bearer tokens.
 
 * **T0b -> T1:** the agent's only identity is the DEV/TEST header `X-Dev-Actor-Id` (not
   authentication, never active in production). Every body is validated with extra fields
@@ -49,6 +69,9 @@ hardens the mandate/handoff claims.
 
 * The agent cannot approve a contract, self-verify identity, decide AML outcomes or mark a
   depot `OPENED`. Only a trusted depot-provider confirmation advances to `OPENED`.
+* An agent token is never a customer credential and a customer session is never an agent
+  credential. No HTTP route issues or widens agent authority.
+* Tokens, token hashes, session secrets and the handoff nonce are never logged or audited.
 * `ProviderSubmission` has no `opened` field; `AgentToolName` has no approve/sign/set-opened tool.
 * Fail closed if policy, authorization or a provider callback is unavailable.
 * Synthetic data only. Every mock is labelled `MOCK` and is not a real or certified integration.

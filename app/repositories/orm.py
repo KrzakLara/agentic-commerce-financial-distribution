@@ -10,6 +10,10 @@ Integrity is enforced in the database itself as well as in code:
   never be updated or deleted (append-only).
 * Phase 02: at most one *active* handoff per application (partial unique index); receipts and
   check results are append-only; a revoked mandate stays revoked; one consent per handoff.
+* Phase 03: mandates of three kinds (bootstrap / onboarding / status), at most one per kind and
+  application; their claims are immutable and a bootstrap's application binding is set once.
+  Agent access tokens and customer sessions are stored as SHA-256 hashes only, with
+  immutable claims and final revocation.
 """
 
 from datetime import UTC, datetime
@@ -32,7 +36,7 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
-from app.domain.enums import ApplicationStatus, CheckOutcome, CheckType
+from app.domain.enums import ApplicationStatus, CheckOutcome, CheckType, MandateKind
 from app.domain.workflow import RESUMABLE_STATES, TERMINAL_STATES
 from app.repositories.database import Base
 
@@ -63,6 +67,7 @@ _PARKED = _sql_list(RESUMABLE_STATES)
 _TERMINAL = _sql_list(TERMINAL_STATES)
 _CHECK_TYPES = _sql_list(CheckType)
 _CHECK_OUTCOMES = _sql_list(CheckOutcome)
+_MANDATE_KINDS = _sql_list(MandateKind)
 
 
 class ApplicationRow(Base):
@@ -137,22 +142,79 @@ class AuditEventRow(Base):
 
 
 class MandateRow(Base):
-    """Onboarding mandate: short-lived, scoped delegation for ONE application (mock claims)."""
+    """Authorization grant (mock claims): bootstrap, onboarding or status - see `MandateKind`.
+
+    A bootstrap grant has no application until it creates one; every other kind is bound to
+    its application from the start. At most one grant of each kind per application.
+    """
 
     __tablename__ = "mandates"
 
     mandate_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     jti: Mapped[str] = mapped_column(String(64), unique=True)
-    application_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("applications.application_id", ondelete="RESTRICT"), unique=True
+    kind: Mapped[str] = mapped_column(String(20))
+    application_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("applications.application_id", ondelete="RESTRICT"), nullable=True
     )
     agent_actor_id: Mapped[str] = mapped_column(String(64))
     customer_id: Mapped[str] = mapped_column(String(64))
+    issuer: Mapped[str] = mapped_column(String(64))
     audience: Mapped[str] = mapped_column(String(64))
     scopes: Mapped[list[str]] = mapped_column(JSON)
     issued_at: Mapped[datetime] = mapped_column(UtcDateTime())
     expires_at: Mapped[datetime] = mapped_column(UtcDateTime())
     revoked_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), nullable=True)
+
+    __table_args__ = (
+        # NULL application ids (unused bootstrap grants) never collide in SQLite.
+        UniqueConstraint("application_id", "kind", name="uq_mandates_application_kind"),
+        CheckConstraint(f"kind IN ({_MANDATE_KINDS})", name="ck_mandates_kind"),
+        CheckConstraint(
+            "kind = 'bootstrap' OR application_id IS NOT NULL", name="ck_mandates_bound"
+        ),
+        CheckConstraint("expires_at > issued_at", name="ck_mandates_expiry"),
+    )
+
+
+class AgentAccessTokenRow(Base):
+    """Opaque agent bearer token. Only the SHA-256 hash is stored, never the token itself."""
+
+    __tablename__ = "agent_access_tokens"
+
+    jti: Mapped[str] = mapped_column(String(64), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    mandate_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("mandates.mandate_id", ondelete="RESTRICT"), index=True
+    )
+    issuer: Mapped[str] = mapped_column(String(64))
+    audience: Mapped[str] = mapped_column(String(64))
+    scopes: Mapped[list[str]] = mapped_column(JSON)
+    issued_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    expires_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    revoked_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("length(token_hash) = 64", name="ck_agent_access_tokens_hash"),
+        CheckConstraint("expires_at > issued_at", name="ck_agent_access_tokens_expiry"),
+    )
+
+
+class CustomerSessionRow(Base):
+    """Server-side customer session (DEV-simulated sign-in). Secret stored as SHA-256 only."""
+
+    __tablename__ = "customer_sessions"
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    secret_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    customer_id: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    expires_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    revoked_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("length(secret_hash) = 64", name="ck_customer_sessions_hash"),
+        CheckConstraint("expires_at > created_at", name="ck_customer_sessions_expiry"),
+    )
 
 
 class HandoffRow(Base):
@@ -321,6 +383,58 @@ _trigger(
     BEGIN SELECT RAISE(ABORT, 'a revoked mandate stays revoked'); END
     """,
 )
+# Phase 03: nobody - not even a buggy service - can widen a grant after it was issued.
+_trigger(
+    MandateRow.__table__,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_mandates_claims_are_immutable
+    BEFORE UPDATE OF mandate_id, jti, kind, agent_actor_id, customer_id, issuer, audience,
+                     scopes, issued_at, expires_at ON mandates
+    BEGIN SELECT RAISE(ABORT, 'mandate claims are immutable'); END
+    """,
+)
+_trigger(
+    MandateRow.__table__,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_mandates_binding_is_final
+    BEFORE UPDATE OF application_id ON mandates
+    WHEN OLD.application_id IS NOT NULL OR OLD.kind != 'bootstrap' OR OLD.revoked_at IS NOT NULL
+         OR NEW.application_id IS NULL
+    BEGIN SELECT RAISE(ABORT, 'only an unused bootstrap mandate can be bound, once'); END
+    """,
+)
+for _table, _name, _label, _claims in (
+    (
+        AgentAccessTokenRow.__table__,
+        "agent_access_tokens",
+        "access token",
+        "jti, token_hash, mandate_id, issuer, audience, scopes, issued_at, expires_at",
+    ),
+    (
+        CustomerSessionRow.__table__,
+        "customer_sessions",
+        "customer session",
+        "session_id, secret_hash, customer_id, created_at, expires_at",
+    ),
+):
+    _trigger(
+        _table,
+        f"""
+        CREATE TRIGGER IF NOT EXISTS trg_{_name}_revocation_is_final
+        BEFORE UPDATE OF revoked_at ON {_name}
+        WHEN OLD.revoked_at IS NOT NULL
+             AND (NEW.revoked_at IS NULL OR NEW.revoked_at != OLD.revoked_at)
+        BEGIN SELECT RAISE(ABORT, 'a revoked {_label} stays revoked'); END
+        """,
+    )
+    _trigger(
+        _table,
+        f"""
+        CREATE TRIGGER IF NOT EXISTS trg_{_name}_claims_are_immutable
+        BEFORE UPDATE OF {_claims} ON {_name}
+        BEGIN SELECT RAISE(ABORT, '{_label} claims are immutable'); END
+        """,
+    )
 _trigger(
     DepotSubmissionRow.__table__,
     """

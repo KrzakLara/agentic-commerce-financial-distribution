@@ -43,13 +43,33 @@ class ProviderRole(StrEnum):
 
 
 class MandateScope(StrEnum):
-    """Scopes of a short-lived onboarding mandate; mirrors the agent tool set (ADR-09)."""
+    """Operation-specific scopes; names mirror the agent tool set (ADR-09).
+
+    `DISCOVER` is never granted: catalog discovery is public (ADR section 05).
+    """
 
     DISCOVER = "discover"
-    CREATE_DRAFT = "create_draft"
-    REQUEST_HANDOFF = "request_handoff"
-    READ_STATUS = "read_status"
-    SUBMIT_AFTER_CONSENT = "submit_after_consent"
+    CREATE_DRAFT = "create_draft"  # create ONE draft application (bootstrap grant only)
+    REQUEST_HANDOFF = "request_handoff"  # ask for the customer's approval of one application
+    READ_STATUS = "read_status"  # read the coarse status of one application
+    SUBMIT_AFTER_CONSENT = "submit_after_consent"  # submit one customer-approved application
+
+
+class MandateKind(StrEnum):
+    """What a mandate (authorization grant) is for. Phase 03.
+
+    * BOOTSTRAP  - issued by the trusted dev/test bootstrap: may create ONE draft for ONE
+                   customer; bound to the created application on first use.
+    * ONBOARDING - issued by the bank with the draft: handoff + submit for that application;
+                   revoked when the workflow reaches a terminal state.
+    * STATUS     - issued by the bank with the draft: read-only coarse status of that
+                   application; deliberately outlives the workflow until it expires, so the
+                   agent can learn the outcome (ADR section 03, step 5). It can change nothing.
+    """
+
+    BOOTSTRAP = "bootstrap"
+    ONBOARDING = "onboarding"
+    STATUS = "status"
 
 
 class AuditActorType(StrEnum):

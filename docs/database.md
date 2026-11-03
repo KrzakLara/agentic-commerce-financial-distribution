@@ -1,9 +1,9 @@
-# Database (Phase 01 + Phase 02)
+# Database (Phase 01 + Phase 02 + Phase 03)
 
 SQLite via SQLAlchemy 2.x. Default URL `sqlite:///./trusteq.db` (git-ignored). The schema is
-created at application startup (`init_database`) and stamped with `PRAGMA user_version = 1`;
-a database with a *newer* version is refused. SQLite runs in WAL mode with foreign keys on and a
-15 s busy timeout.
+created at application startup (`init_database`) and stamped with `PRAGMA user_version`
+(currently **3**); older schemas are upgraded in place, a database with a *newer* version is
+refused. SQLite runs in WAL mode with foreign keys on and a 15 s busy timeout.
 
 ## Layers (three separate model kinds)
 
@@ -74,7 +74,7 @@ applications 1 ──── 1 mandates
 
 | Table | Purpose | Key constraints |
 |---|---|---|
-| `mandates` | per-application onboarding mandate (scopes, `jti`, expiry, `revoked_at`) | UNIQUE `application_id`; a revoked mandate stays revoked (trigger) |
+| `mandates` | per-application onboarding mandate (scopes, `jti`, expiry, `revoked_at`) - **rebuilt in Phase 03, see below** | UNIQUE `application_id` (v2); a revoked mandate stays revoked (trigger) |
 | `handoffs` | one-time customer challenge: `nonce_hash` (never the nonce), `action` JSON, `action_digest`, `expires_at`, `customer_id`/`consumed_at`/`revoked_at` | **partial UNIQUE index: one active handoff per application**; CHECK `customer_id` set iff consumed |
 | `consent_receipts` | which customer approved which action digest, via which handoff | UNIQUE `handoff_id`; append-only (triggers) |
 | `disclosure_receipts` | acknowledgement of a document id + version + digest | append-only (triggers) |
@@ -90,6 +90,82 @@ Additional audit events (Phase 02): `handoff.created`, `handoff.confirmed`, `han
 `provider.confirmation_accepted`, `provider.confirmation_rejected` (denied). Transition events at a
 terminal state also carry `mandate_revoked: true`. Audit details never contain the nonce, the
 callback secret, the idempotency key or the customer reference.
+
+## Phase 03: grants, tokens, customer sessions (schema version 3)
+
+```text
+applications 1 ──── 0..1 mandates(kind=bootstrap)   (bound when it created this application)
+     ├──────────── 1    mandates(kind=onboarding) ──── 1..n agent_access_tokens
+     └──────────── 1    mandates(kind=status)     ──── 1..n agent_access_tokens
+mandates(kind=bootstrap, application_id NULL)  = an unused bootstrap grant
+customer_sessions                               (independent of agents and applications)
+```
+
+### `mandates` (rebuilt)
+| Column | Notes |
+|---|---|
+| `mandate_id` | PK `mdt-<hex>` |
+| `jti` | UNIQUE grant identifier (`grt-<hex>`; `jti-<hex>` for Phase 02 grants) |
+| `kind` | `bootstrap` / `onboarding` / `status` (CHECK) |
+| `application_id` | FK, **NULL only for an unused bootstrap grant** (CHECK `kind = 'bootstrap' OR application_id IS NOT NULL`) |
+| `agent_actor_id`, `customer_id` | who may act, for whom |
+| `issuer`, `audience` | `trusteq-dev-authorization`, `trusteq-onboarding-api` |
+| `scopes` | JSON list; exactly the kind's scopes |
+| `issued_at`, `expires_at`, `revoked_at` | CHECK `expires_at > issued_at` |
+
+UNIQUE `(application_id, kind)`: one grant of each kind per application (NULLs never collide, so
+any number of unused bootstrap grants can exist).
+
+### `agent_access_tokens`
+| Column | Notes |
+|---|---|
+| `jti` | PK `jti-<hex>`; what audit events and revocation refer to |
+| `token_hash` | UNIQUE SHA-256 hex of the bearer token (CHECK length 64). **The token itself is never stored.** |
+| `mandate_id` | FK -> `mandates` (RESTRICT), indexed |
+| `issuer`, `audience`, `scopes` | checked on every request; scopes must be a subset of the grant's |
+| `issued_at`, `expires_at`, `revoked_at` | CHECK `expires_at > issued_at`; expiry equals the grant's |
+
+### `customer_sessions`
+| Column | Notes |
+|---|---|
+| `session_id` | PK `ses-<hex>`; a public id for audit events, not a credential |
+| `secret_hash` | UNIQUE SHA-256 hex of the cookie secret (CHECK length 64) |
+| `customer_id` | indexed |
+| `created_at`, `expires_at`, `revoked_at` | expiry and revocation are decided here, not by the cookie |
+
+### Phase 03 triggers
+
+| Trigger | Rule |
+|---|---|
+| `trg_mandates_claims_are_immutable` | `jti`, `kind`, agent, customer, issuer, audience, scopes, issued/expiry can never change |
+| `trg_mandates_binding_is_final` | only an unused, unrevoked bootstrap grant can get an `application_id`, once |
+| `trg_mandates_revocation_is_final` | (Phase 02, recreated on the new table) a revoked grant stays revoked |
+| `trg_agent_access_tokens_claims_are_immutable` / `_revocation_is_final` | same for tokens |
+| `trg_customer_sessions_claims_are_immutable` / `_revocation_is_final` | same for sessions |
+
+### Upgrade 2 -> 3 (`init_database`)
+
+SQLite cannot drop a `NOT NULL` or a column-level `UNIQUE` in place, so `mandates` is rebuilt:
+(1) drop its old trigger and rename it to `_mandates_v2`; (2) `create_all` creates the new
+`mandates`, `agent_access_tokens` and `customer_sessions` with all constraints and triggers;
+(3) copy every row as `kind = 'onboarding'`, `issuer = trusteq-dev-authorization`, verify that
+none is missing (else `SchemaMigrationError`, nothing dropped), drop `_mandates_v2`; (4) stamp
+version 3. Every step checks the current state first, so an interrupted upgrade resumes on the next
+start (`tests/test_schema_migration.py` builds a real v2 database from
+`tests/fixtures/schema_v2.sql` and covers this). Phase 02 data is preserved; a Phase 02 *in-flight*
+application has no tokens - an operator re-issues them with
+`python -m scripts.dev_auth app-tokens --application-id <id>`.
+
+Additional audit events (Phase 03): `authorization.bootstrap_issued` (operator),
+`authorization.denied` (reason: `token_revoked`, `grant_revoked`, `token_expired`,
+`grant_expired`, `wrong_issuer`, `wrong_audience`, `not_yet_valid`, `scope_exceeds_grant`,
+`insufficient_scope`), `authorization.tokens_reissued`, `authorization.token_revoked`,
+`application.create_denied` (`bootstrap_already_used`, `bootstrap_inactive`,
+`customer_not_covered`), `application.access_denied` (`not_owner`, `outside_authorization`),
+`customer.session_started`, `handoff.rejected` (new reasons `agent_credentials_presented`,
+`csrf_token_invalid`), `workflow.resumed` (success / failure). Terminal transitions also carry
+`tokens_revoked` and `handoffs_revoked`. Never stored in audit details: tokens, token hashes,
+session secrets, the nonce, customer references.
 
 ## Triggers (defence in depth, enforced even for raw SQL)
 
@@ -118,5 +194,7 @@ state.
 
 ## Migrations
 
-There is no migration tool yet. `SCHEMA_VERSION` + `PRAGMA user_version` mark the schema so a
-later phase can add Alembic (or numbered SQL steps) without ambiguity about what is deployed.
+There is no migration tool. `SCHEMA_VERSION` + `PRAGMA user_version` mark the schema; version 2
+only added tables, version 3 contains one hand-written, resumable rebuild step (above). A
+production deployment would move to Alembic (or numbered, reviewed SQL steps) and a real database
+with online migrations.

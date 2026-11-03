@@ -1,5 +1,6 @@
 """The complete simulated happy path and the ways it must NOT advance."""
 
+import re
 import uuid
 from collections.abc import Callable
 
@@ -16,7 +17,7 @@ from app.domain.workflow import TransitionAuthority as A
 from app.integrations.mock import MockComplianceProvider, MockKycProvider
 from app.integrations.results import CheckResult
 from app.main import create_app
-from tests.flow import CALLBACK_PATH, INTENT, PROVIDER_SECRET, Flow, agent_headers
+from tests.flow import CALLBACK_PATH, FORGED_TOKEN, INTENT, PROVIDER_SECRET, Flow, bearer
 
 FORBIDDEN_FOR_AGENT = (
     "kyc", "compliance", "manual", "mock-", "cust-1", "customer_ref", "consent",
@@ -115,27 +116,32 @@ def test_mock_services_are_explicitly_labelled_and_leave_internal_evidence(flow:
 def test_the_onboarding_mandate_is_issued_with_the_draft_and_revoked_at_opened(flow: Flow) -> None:
     started = flow.start()
     ((scopes, revoked),) = flow.sql(
-        "SELECT scopes, revoked_at FROM mandates WHERE application_id = :a",
+        "SELECT scopes, revoked_at FROM mandates WHERE application_id = :a AND kind = 'onboarding'",
         a=started.application_id,
     )
     assert revoked is None and "submit_after_consent" in scopes and "request_handoff" in scopes
+    assert "create_draft" not in scopes and "read_status" not in scopes  # least privilege
     flow.customer_confirm(started)
     flow.agent().continue_after_customer(started.application_id)
-    ((still_active,),) = flow.sql("SELECT revoked_at FROM mandates")
+    ((still_active,),) = flow.sql("SELECT revoked_at FROM mandates WHERE kind = 'onboarding'")
     assert still_active is None  # submitted, not yet opened: the mandate is still needed
     flow.provider_confirms(started.application_id)
-    ((revoked_at,),) = flow.sql("SELECT revoked_at FROM mandates")
+    ((revoked_at,),) = flow.sql("SELECT revoked_at FROM mandates WHERE kind = 'onboarding'")
     assert revoked_at is not None
+    # The consumed bootstrap grant ends too; only the read-only status grant lives on.
+    states = dict(flow.sql("SELECT kind, revoked_at IS NOT NULL FROM mandates"))
+    assert states == {"bootstrap": 1, "onboarding": 1, "status": 0}
 
 
 def test_after_opening_the_agent_can_no_longer_act_on_the_application(flow: Flow) -> None:
     app_id = flow.run_to_opened().application_id
     for path in ("handoff", "submit"):
         response = flow.agent_http.post(
-            f"/v1/applications/{app_id}/{path}", headers=agent_headers()
+            f"/v1/applications/{app_id}/{path}", headers=flow.onboarding_headers(app_id)
         )
-        assert response.status_code == 403, path
-        assert response.json()["error"]["code"] == "mandate_inactive"
+        # Phase 03: OPENED revoked the onboarding token itself -> 401 (was 403 mandate_inactive).
+        assert response.status_code == 401, path
+        assert response.json()["error"]["code"] == "invalid_token"
     assert flow.status_of(app_id) == "OPENED"
     assert flow.agent_state(app_id) == "OPENED"  # read-only generic status stays available
 
@@ -149,16 +155,20 @@ def test_opened_state_survives_an_application_restart(
 
     second = flow_factory()  # a brand-new app instance on the same SQLite file
     assert second.app is not first.app
+    # The agent runtime keeps its own tokens across the bank's restart; the bank keeps hashes.
+    second.credentials().remember(app_id, first.credentials().for_application(app_id))  # type: ignore[arg-type]
     assert second.agent_state(app_id) == "OPENED"
     assert second.status_of(app_id) == "OPENED"
     assert len(second.audit(app_id)) == audit_len
-    assert second.sql("SELECT revoked_at IS NOT NULL FROM mandates") == [(1,)]
-    # ... and the restored application is still protected.
+    assert second.sql("SELECT revoked_at IS NOT NULL FROM mandates WHERE kind = 'onboarding'") == [
+        (1,)
+    ]
+    # ... and the restored application is still protected: the revocation was persisted.
     assert (
         second.agent_http.post(
-            f"/v1/applications/{app_id}/submit", headers=agent_headers()
+            f"/v1/applications/{app_id}/submit", headers=second.onboarding_headers(app_id)
         ).status_code
-        == 403
+        == 401
     )
     assert second.provider_confirms(app_id).status_code == 403  # nothing left to confirm
 
@@ -171,6 +181,8 @@ def test_in_flight_state_survives_a_restart_and_the_flow_can_continue(
     assert first.customer_confirm(started).status_code == 200  # stop here: "process dies"
 
     second = flow_factory()
+    tokens = first.credentials().for_application(started.application_id)
+    second.credentials().remember(started.application_id, tokens)  # type: ignore[arg-type]
     resumed = second.agent().continue_after_customer(started.application_id)
     assert resumed.stopped_at is None
     assert second.provider_confirms(started.application_id).status_code == 200
@@ -183,7 +195,8 @@ def test_in_flight_state_survives_a_restart_and_the_flow_can_continue(
 def test_submission_is_blocked_while_the_customer_has_not_confirmed(flow: Flow) -> None:
     started = flow.start()
     response = flow.agent_http.post(
-        f"/v1/applications/{started.application_id}/submit", headers=agent_headers()
+        f"/v1/applications/{started.application_id}/submit",
+        headers=flow.onboarding_headers(started.application_id),
     )
     assert (
         response.status_code == 409 and response.json()["error"]["code"] == "prerequisites_not_met"
@@ -202,8 +215,10 @@ def test_submission_is_blocked_while_the_customer_has_not_confirmed(flow: Flow) 
 
 
 def test_submission_of_a_draft_without_any_handoff_is_blocked(flow: Flow) -> None:
-    app_id = flow.agent().draft_application(INTENT).application_id
-    response = flow.agent_http.post(f"/v1/applications/{app_id}/submit", headers=agent_headers())
+    app_id = flow.draft(INTENT)
+    response = flow.agent_http.post(
+        f"/v1/applications/{app_id}/submit", headers=flow.onboarding_headers(app_id)
+    )
     assert response.status_code == 409
     assert flow.status_of(app_id) == "DRAFT"
 
@@ -211,11 +226,14 @@ def test_submission_of_a_draft_without_any_handoff_is_blocked(flow: Flow) -> Non
 def test_another_agent_cannot_submit_my_application(flow: Flow) -> None:
     started = flow.start()
     flow.customer_confirm(started)
-    response = flow.agent_http.post(
-        f"/v1/applications/{started.application_id}/submit", headers=agent_headers("agent-b")
+    other = flow.start(actor_id="agent-b", intent=INTENT.model_copy(update={"customer_ref": "c9"}))
+    response = flow.agent_http.post(  # agent-b's own VALID onboarding token
+        f"/v1/applications/{started.application_id}/submit",
+        headers=flow.onboarding_headers(other.application_id, "agent-b"),
     )
     assert response.status_code == 404
     assert flow.status_of(started.application_id) == "CONTRACT_PENDING"
+    assert flow.sql("SELECT COUNT(*) FROM depot_submissions") == [(0,)]
 
 
 @pytest.mark.parametrize(
@@ -240,7 +258,9 @@ def test_a_check_that_does_not_pass_stops_the_workflow_in_manual_review(
     app_id = started.application_id
     assert flow.status_of(app_id) == "MANUAL_REVIEW"
     assert flow.agent_state(app_id) == "ACTION_REQUIRED"  # generic: no hint it is a review
-    response = flow.agent_http.post(f"/v1/applications/{app_id}/submit", headers=agent_headers())
+    response = flow.agent_http.post(
+        f"/v1/applications/{app_id}/submit", headers=flow.onboarding_headers(app_id)
+    )
     assert (
         response.status_code == 409 and response.json()["error"]["code"] == "prerequisites_not_met"
     )
@@ -260,14 +280,15 @@ def test_a_check_that_does_not_pass_stops_the_workflow_in_manual_review(
 
 
 class FlakyKyc:
-    """A MOCK KYC provider that fails once (simulating a crash/outage), then recovers."""
+    """A MOCK KYC provider that fails `failures` times (a crash/outage), then recovers."""
 
-    def __init__(self) -> None:
+    def __init__(self, failures: int = 1) -> None:
         self.calls = 0
+        self.failures = failures
 
     def verify_identity(self, application: DepotApplication) -> CheckResult:
         self.calls += 1
-        if self.calls == 1:
+        if self.calls <= self.failures:
             raise RuntimeError("kyc provider unavailable")
         return CheckResult(
             outcome=CheckOutcome.PASS, reference=f"MOCK-KYC-{application.application_id}", mock=True
@@ -277,7 +298,8 @@ class FlakyKyc:
 def test_an_interrupted_check_pipeline_fails_closed_and_can_be_resumed(
     flow_factory: Callable[..., Flow],
 ) -> None:
-    flow = flow_factory(kyc=FlakyKyc())
+    kyc = FlakyKyc(failures=2)  # down during the confirmation AND the first retry
+    flow = flow_factory(kyc=kyc)
     flow.customer_http = TestClient(flow.app, raise_server_exceptions=False)
     started = flow.start()
     crashed = flow.customer_confirm(started)
@@ -288,18 +310,22 @@ def test_an_interrupted_check_pipeline_fails_closed_and_can_be_resumed(
         flow.status_of(app_id) == "KYC_PENDING"
     )  # the consent is durable, the checks are not done
     assert flow.sql("SELECT COUNT(*) FROM consent_receipts") == [(1,)]
-    blocked = flow.agent_http.post(f"/v1/applications/{app_id}/submit", headers=agent_headers())
-    assert blocked.status_code == 409  # fail closed: submit stays blocked
+    submit = f"/v1/applications/{app_id}/submit"
+    blocked = flow.agent_http.post(submit, headers=flow.onboarding_headers(app_id))
+    assert blocked.status_code == 409  # fail closed: still no KYC evidence, nothing submitted
     assert flow.sql("SELECT COUNT(*) FROM depot_submissions") == [(0,)]
+    assert flow.status_of(app_id) == "KYC_PENDING"
 
-    service = flow.onboarding()
-    service.advance_checks(app_id, "corr-recovery")  # trusted recovery re-runs what is pending
-    service.advance_checks(app_id, "corr-recovery")  # and is idempotent
-    assert flow.status_of(app_id) == "CONTRACT_PENDING"
+    # Phase 03: the next submit resumes the pending checks (bounded, idempotent) by itself.
+    resumed = flow.agent_http.post(submit, headers=flow.onboarding_headers(app_id))
+    assert resumed.status_code == 202
+    assert flow.status_of(app_id) == "SUBMITTED_TO_DEPOT_PROVIDER"
     assert flow.sql("SELECT COUNT(*) FROM check_results WHERE application_id = :a", a=app_id) == [
         (3,)
     ]
-    assert flow.agent().continue_after_customer(app_id).stopped_at is None
+    assert kyc.calls == 3  # two outages, one success - never a second recorded KYC result
+    outcomes = [e.outcome.value for e in flow.audit(app_id) if e.event_type == "workflow.resumed"]
+    assert outcomes == ["failure", "success"]
     assert flow.provider_confirms(app_id).status_code == 200
 
 
@@ -349,7 +375,10 @@ def test_the_agent_has_no_route_that_could_open_anything(flow: Flow) -> None:
         ("post", "/v1/internal/depot-provider/confirmations"),
     ):
         response = flow.agent_http.request(
-            method, path, json={"status": "OPENED"}, headers=agent_headers()
+            method,
+            path,
+            json={"status": "OPENED"},
+            headers=flow.onboarding_headers(started.application_id),
         )
         assert response.status_code in {404, 405}, (method, path)
     assert flow.status_of(started.application_id) == "AWAITING_AUTHORIZATION"
@@ -373,9 +402,10 @@ def test_duplicate_submit_requests_hand_over_to_the_provider_only_once(flow: Flo
     started = flow.start()
     flow.customer_confirm(started)
     url = f"/v1/applications/{started.application_id}/submit"
-    first = flow.agent_http.post(url, headers=agent_headers())
-    second = flow.agent_http.post(url, headers=agent_headers())
-    third = flow.agent_http.post(url, headers=agent_headers())
+    auth = flow.onboarding_headers(started.application_id)
+    first = flow.agent_http.post(url, headers=auth)
+    second = flow.agent_http.post(url, headers=auth)
+    third = flow.agent_http.post(url, headers=auth)
     assert (first.status_code, second.status_code, third.status_code) == (202, 200, 200)
     assert flow.sql("SELECT COUNT(*) FROM depot_submissions") == [(1,)]
     assert flow.event_types(started.application_id).count("application.submitted") == 1
@@ -405,16 +435,25 @@ def test_agent_facing_responses_never_expose_internal_or_compliance_detail(flow:
     flow.agent_http = Recording(flow.app)
     started = flow.start()
     flow.agent_http.post(
-        f"/v1/applications/{started.application_id}/submit", headers=agent_headers()
+        f"/v1/applications/{started.application_id}/submit",
+        headers=flow.onboarding_headers(started.application_id),
     )  # denied
     flow.customer_confirm(started)
     flow.agent().continue_after_customer(started.application_id)
     flow.provider_confirms(started.application_id)
     flow.agent().read_status(started.application_id)
-    flow.agent_http.get("/v1/applications/app-nope", headers=agent_headers())
+    flow.agent_http.get(
+        "/v1/applications/app-nope", headers=flow.status_headers(started.application_id)
+    )
 
     assert len(seen) >= 10  # the whole journey was actually observed
     for body in seen:
+        # The agent's OWN credential material (random tokens, the handoff nonce) and its own
+        # public scope names (e.g. "submit_after_consent", ADR-09 tool names) are not internal
+        # detail - mask them so e.g. a random "kyc" inside a token cannot cause a false alarm.
+        body = re.sub(r"tqa_[A-Za-z0-9_\-]{43}", "<token>", body)
+        body = re.sub(r"token=[A-Za-z0-9_\-]+", "token=<nonce>", body)
+        body = re.sub(r'"scope":"[a-z_ ]+"', '"scope":"<scopes>"', body)
         lowered = body.lower()
         for token in FORBIDDEN_FOR_AGENT:
             assert token not in lowered, (token, body[:200])
@@ -449,12 +488,13 @@ def test_in_production_the_whole_ceremony_fails_closed(db_url: str) -> None:
             prod.post(
                 "/v1/applications",
                 json=body,
-                headers={**agent_headers(), "Idempotency-Key": str(uuid.uuid4())},
+                headers={**bearer(FORGED_TOKEN), "Idempotency-Key": str(uuid.uuid4())},
             ).status_code
             == 401
         )
         assert (
-            prod.post("/v1/applications/app-1/submit", headers=agent_headers()).status_code == 401
+            prod.post("/v1/applications/app-1/submit", headers=bearer(FORGED_TOKEN)).status_code
+            == 401
         )
         assert (
             prod.post(

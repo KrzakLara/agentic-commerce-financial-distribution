@@ -1,7 +1,8 @@
 """Minimal bank-controlled customer pages (server-rendered HTML, no JavaScript).
 
 Everything dynamic is passed through `html.escape`. Responses carry anti-framing, no-store and
-a strict content-security-policy (forms may only post back to this origin).
+a strict content-security-policy (forms may only post back to this origin). Every form carries
+a CSRF token bound to the browser's (pre-)session and to this handoff (Phase 03).
 
 These pages are a PROTOTYPE of the bank's confirmation ceremony. The customer sign-in on them
 is a DEV-ONLY simulation (see `app.api.customer_auth`), not identity verification.
@@ -55,7 +56,9 @@ def html_response(content: str, status_code: int = 200) -> HTMLResponse:
     return HTMLResponse(content, status_code=status_code, headers=_SECURITY_HEADERS)
 
 
-def sign_in_page(handoff_id: str, token: str, error: str | None = None) -> str:
+def sign_in_page(
+    handoff_id: str, token: str, error: str | None = None, *, login_csrf: str = ""
+) -> str:
     notice = f'<p class="err">{escape(error)}</p>' if error else ""
     body = (
         "<p>Please sign in as the customer to review and confirm this request.</p>"
@@ -65,6 +68,7 @@ def sign_in_page(handoff_id: str, token: str, error: str | None = None) -> str:
         '<form method="post" action="/customer/dev-login">'
         f'<input type="hidden" name="handoff_id" value="{escape(handoff_id, quote=True)}">'
         f'<input type="hidden" name="token" value="{escape(token, quote=True)}">'
+        f'<input type="hidden" name="login_csrf" value="{escape(login_csrf, quote=True)}">'
         '<label>Customer ID <input type="text" name="customer_id" autocomplete="off" required></label> '
         '<button type="submit">Sign in (simulated)</button></form>'
     )
@@ -79,6 +83,7 @@ def review_page(
     provider_name: str,
     product_name: str,
     channel_label: str,
+    csrf_token: str = "",
 ) -> str:
     action = review.handoff.action
     rows = [
@@ -110,6 +115,7 @@ def review_page(
         f'<form method="post" action="/customer/handoffs/{escape(review.handoff.handoff_id, quote=True)}/confirm">'
         f'<input type="hidden" name="token" value="{escape(token, quote=True)}">'
         f'<input type="hidden" name="action_digest" value="{escape(review.handoff.action_digest, quote=True)}">'
+        f'<input type="hidden" name="csrf_token" value="{escape(csrf_token, quote=True)}">'
         "<p>By pressing the button you confirm exactly the action shown above.</p>"
         '<button type="submit">Confirm and authorize</button></form>'
     )

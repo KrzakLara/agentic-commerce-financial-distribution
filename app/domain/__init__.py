@@ -10,12 +10,14 @@ from app.domain.audit import AuditEvent
 from app.domain.catalog import Channel, Product, Provider
 from app.domain.checks import CheckRecord, DepotSubmissionRecord
 from app.domain.customer import AgentActor, Customer
+from app.domain.customer_session import CustomerSession
 from app.domain.enums import (
     ApplicationStatus,
     AuditActorType,
     AuditOutcome,
     CheckOutcome,
     CheckType,
+    MandateKind,
     MandateScope,
     ProviderRole,
     ReviewCaseReason,
@@ -24,11 +26,12 @@ from app.domain.enums import (
 )
 from app.domain.handoff import ApprovedAction, Handoff
 from app.domain.idempotency import IdempotencyRecord
-from app.domain.mandate import Mandate
+from app.domain.mandate import AgentAccessToken, Mandate
 from app.domain.receipts import ConsentReceipt, DisclosureReceipt
 from app.domain.review import ManualReviewCase
 
 __all__ = [
+    "AgentAccessToken",
     "AgentActor",
     "ApprovedAction",
     "Channel",
@@ -42,12 +45,14 @@ __all__ = [
     "AuditOutcome",
     "ConsentReceipt",
     "Customer",
+    "CustomerSession",
     "DepotApplication",
     "DisclosureReceipt",
     "Handoff",
     "IdempotencyRecord",
     "ManualReviewCase",
     "Mandate",
+    "MandateKind",
     "MandateScope",
     "Product",
     "Provider",

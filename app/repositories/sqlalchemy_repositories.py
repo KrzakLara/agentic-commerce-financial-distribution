@@ -17,7 +17,9 @@ from app.domain.enums import ApplicationStatus, AuditActorType, AuditOutcome
 from app.domain.idempotency import IdempotencyRecord
 from app.repositories.orm import ApplicationRow, AuditEventRow, IdempotencyRecordRow
 from app.repositories.workflow_repositories import (
+    SqlAlchemyAgentTokenRepository,
     SqlAlchemyCheckRepository,
+    SqlAlchemyCustomerSessionRepository,
     SqlAlchemyDepotSubmissionRepository,
     SqlAlchemyHandoffRepository,
     SqlAlchemyMandateRepository,
@@ -193,6 +195,8 @@ class SqlAlchemyUnitOfWork:
         self.idempotency = SqlAlchemyIdempotencyRepository(self._session)
         self.audit = SqlAlchemyAuditRepository(self._session)
         self.mandates = SqlAlchemyMandateRepository(self._session)
+        self.agent_tokens = SqlAlchemyAgentTokenRepository(self._session)
+        self.customer_sessions = SqlAlchemyCustomerSessionRepository(self._session)
         self.handoffs = SqlAlchemyHandoffRepository(self._session)
         self.receipts = SqlAlchemyReceiptRepository(self._session)
         self.checks = SqlAlchemyCheckRepository(self._session)

@@ -17,7 +17,7 @@ from app.integrations.catalog_fixture import (
     tampered_copy,
 )
 from app.main import create_app
-from tests.conftest import actor
+from tests.conftest import bootstrap_headers
 
 BODY = {
     "provider_id": "fixture-bank",
@@ -31,7 +31,7 @@ def post(client: TestClient, body: dict[str, str]):  # noqa: ANN201
     return client.post(
         "/v1/applications",
         json=body,
-        headers={**actor("agent-a"), "Idempotency-Key": str(uuid.uuid4())},
+        headers={**bootstrap_headers(client), "Idempotency-Key": str(uuid.uuid4())},
     )
 
 

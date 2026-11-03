@@ -121,16 +121,17 @@ The agent never sees the internal state, only a coarse one (`app/domain/visibili
 |---|---|
 | DRAFT -> AWAITING_AUTHORIZATION | `OnboardingService.request_handoff` (agent request, `SYSTEM_POLICY`) |
 | AWAITING_AUTHORIZATION -> AUTHORIZED | `confirm_handoff` after challenge, identity, digest, catalog and mandate checks (`CUSTOMER_CHANNEL`) |
-| AUTHORIZED -> KYC_PENDING -> COMPLIANCE_PENDING -> CONTRACT_PENDING | `advance_checks`, one committed step each, with a `check_results` row (`SYSTEM_POLICY`) |
+| AUTHORIZED -> KYC_PENDING -> COMPLIANCE_PENDING -> CONTRACT_PENDING | `advance_checks`, one committed step each, with a `check_results` row (`SYSTEM_POLICY`); since Phase 03 also resumed by the next authorized `submit` after an interruption |
 | any non-PASS check -> MANUAL_REVIEW | `advance_checks`, fail closed (`SYSTEM_POLICY`) |
 | CONTRACT_PENDING -> SUBMITTED_TO_DEPOT_PROVIDER | `submit_application`, only if `evaluate_submit` allows (`SYSTEM_POLICY`) |
 | SUBMITTED_TO_DEPOT_PROVIDER -> OPENED | `handle_provider_confirmation` after signature, identity, state and replay checks (`DEPOT_PROVIDER_CONFIRMATION`) |
 
 Each runs through `ApplicationService.apply_transition`, inside the flow's own unit of work: the
-state change, its audit event, the mandate revocation (terminal states) and the flow's other writes
-commit together or not at all.
+state change, its audit event, the revocations at terminal states (Phase 03: bootstrap and
+onboarding grants, their tokens and any open handoff) and the flow's other writes commit
+together or not at all.
 
 ## Not yet implemented
 
-No endpoint triggers transitions yet; the handoff, customer confirmation, mock checks and the
-provider callback that drive them arrive in Phases 02-03. Phase 01 defines and tests the rules.
+Operator-driven transitions (leaving `MANUAL_REVIEW`, `REJECTED` decisions), customer
+`request-human` and cancellation endpoints. The rules for them exist and are tested here.

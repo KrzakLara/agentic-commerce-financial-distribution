@@ -16,11 +16,11 @@ from app.repositories.database import create_db_engine, create_session_factory, 
 from app.repositories.interfaces import UnitOfWork
 from app.repositories.sqlalchemy_repositories import SqlAlchemyUnitOfWork
 from app.services.application_service import ApplicationService
+from app.services.authorization_service import AuthorizationService
+from tests.flow import bearer, trusted_authorization
 
 if TYPE_CHECKING:
     from tests.flow import Flow
-
-DEV_ACTOR_HEADER = "X-Dev-Actor-Id"
 
 
 @pytest.fixture(autouse=True)
@@ -51,8 +51,21 @@ def client(app: FastAPI) -> Iterator[TestClient]:
         yield test_client
 
 
-def actor(actor_id: str) -> dict[str, str]:
-    return {DEV_ACTOR_HEADER: actor_id}
+def bootstrap_token(
+    client: TestClient, actor_id: str = "agent-a", customer_id: str = "opaque-id"
+) -> str:
+    """A fresh bootstrap token from the TRUSTED in-process issuer (no HTTP endpoint exists)."""
+    app = client.app
+    issuer = trusted_authorization(app, app.state.container.clock)  # type: ignore[attr-defined]
+    return issuer.issue_bootstrap(
+        agent_actor_id=actor_id, customer_id=customer_id, correlation_id="corr-bootstrap"
+    ).token
+
+
+def bootstrap_headers(
+    client: TestClient, actor_id: str = "agent-a", customer_id: str = "opaque-id"
+) -> dict[str, str]:
+    return bearer(bootstrap_token(client, actor_id, customer_id))
 
 
 @pytest.fixture
@@ -76,8 +89,16 @@ def uow_factory(engine: Engine) -> Callable[[], UnitOfWork]:
 
 
 @pytest.fixture
-def service(uow_factory: Callable[[], UnitOfWork]) -> ApplicationService:
-    return ApplicationService(uow_factory)
+def authz(uow_factory: Callable[[], UnitOfWork]) -> AuthorizationService:
+    """Trusted issuer + verifier on the test database (bootstrap enabled, as in DEV/TEST)."""
+    return AuthorizationService(uow_factory, bootstrap_enabled=True)
+
+
+@pytest.fixture
+def service(
+    uow_factory: Callable[[], UnitOfWork], authz: AuthorizationService
+) -> ApplicationService:
+    return ApplicationService(uow_factory, authorization=authz)
 
 
 @pytest.fixture
