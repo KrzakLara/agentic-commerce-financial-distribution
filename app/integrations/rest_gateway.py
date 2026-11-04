@@ -16,11 +16,13 @@ fields are copied into the tool result - never a token.
 """
 
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
 
+from app.domain.base import OpaqueId
+from app.domain.catalog import ChannelKind
 from app.domain.visibility import AgentVisibleState
 from app.integrations.agent_credentials import AgentCredentials, ApplicationTokens
 from app.integrations.agent_tools import (
@@ -73,6 +75,8 @@ class _CreatedView(_ApplicationView):
 
 class _ChannelView(_Lenient):
     channel_id: str
+    kind: ChannelKind
+    partner_name: str | None = None  # from the bank's own register, not from the manifest
 
 
 class _ManifestView(_Lenient):
@@ -85,6 +89,17 @@ class _ManifestView(_Lenient):
     product_ids: list[str]
 
 
+class _FeeView(_Lenient):
+    code: OpaqueId
+    amount: Annotated[str, StringConstraints(pattern=r"^\d+(\.\d+)? [A-Z]{3}( p\.a\.)?$")]
+
+
+class _SourceView(_Lenient):
+    source_id: OpaqueId
+    document_id: OpaqueId
+    document_version: Annotated[str, StringConstraints(pattern=r"^[0-9A-Za-z.\-]{1,32}$")]
+
+
 class _ProductView(_Lenient):
     product_id: str
     provider_id: str
@@ -94,6 +109,11 @@ class _ProductView(_Lenient):
     document_version: str
     document_digest: str
     channel_ids: list[str]
+    # Phase 05: the structured facts an LLM agent grounds its answers in. Allow-listed and
+    # pattern-checked: narrative provider text (conditions, risk summary, labels, titles) is
+    # never forwarded. A value of another shape makes the whole result UNAVAILABLE.
+    fees: list[_FeeView] = []
+    sources: list[_SourceView] = []
 
 
 class _ProductsView(_Lenient):
@@ -196,6 +216,7 @@ class RestAgentToolGateway:
             "manifest_digest": view.manifest_digest,
             "is_mock": view.is_mock,
             "channel_ids": [c.channel_id for c in view.channels],
+            "channels": [c.model_dump(mode="json") for c in view.channels],
             "product_ids": view.product_ids,
         }
         return AgentToolResult(tool=call.tool, status=AgentVisibleStatus.OK, data=data)

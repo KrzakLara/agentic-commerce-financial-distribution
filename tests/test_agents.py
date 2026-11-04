@@ -215,9 +215,9 @@ def test_factory_returns_scripted_agent_by_default() -> None:
     assert agent.mode == "scripted"
 
 
-def test_llm_mode_is_not_available_in_phase_00() -> None:
+def test_llm_mode_refuses_an_unimplemented_provider() -> None:
     settings = Settings(_env_file=None, ai_execution_mode="llm", enable_llm=True, llm_provider="x")  # type: ignore[arg-type]
-    with pytest.raises(LlmAgentNotAvailableError):
+    with pytest.raises(LlmAgentNotAvailableError, match="anthropic"):
         build_customer_agent(settings, FakeGateway())
 
 

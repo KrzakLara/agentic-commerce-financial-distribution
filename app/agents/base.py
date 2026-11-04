@@ -1,6 +1,7 @@
-"""Agent-facing contract. An LLM-backed agent can later replace the scripted one unchanged."""
+"""Agent-facing contract, shared by the scripted agent and the LLM agent."""
 
 from typing import Any, Protocol
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,6 +21,13 @@ class OpenDepotIntent(BaseModel):
     product_id: str = Field(min_length=1, max_length=64)
     channel_id: str = Field(min_length=1, max_length=64)
     customer_ref: str = Field(min_length=1, max_length=64)
+
+
+def draft_idempotency_key(intent: OpenDepotIntent) -> UUID:
+    """Deterministic: retrying the same intent reuses the key, so the server can return the
+    same application instead of creating a duplicate."""
+    name = "|".join((intent.provider_id, intent.product_id, intent.channel_id, intent.customer_ref))
+    return uuid5(NAMESPACE_URL, f"trusteq:create_draft:{name}")
 
 
 class AgentRunResult(BaseModel):

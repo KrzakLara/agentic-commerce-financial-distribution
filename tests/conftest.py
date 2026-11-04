@@ -27,10 +27,11 @@ if TYPE_CHECKING:
 def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make tests independent of the developer's shell variables and local .env file.
 
-    Also points the default database at memory so no test can create ./trusteq.db.
+    Also points the default database at memory so no test can create ./trusteq.db, and removes
+    any provider credential: the test suite must never be able to reach a real model.
     """
     for name in list(os.environ):
-        if name.startswith("TRUSTEQ_"):
+        if name.startswith(("TRUSTEQ_", "ANTHROPIC_")):
             monkeypatch.delenv(name)
     monkeypatch.setenv("TRUSTEQ_DATABASE_URL", "sqlite:///:memory:")
 

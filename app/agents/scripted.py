@@ -15,9 +15,8 @@ Phases of the journey (the customer's confirmation happens in between, elsewhere
 """
 
 from typing import Any
-from uuid import NAMESPACE_URL, UUID, uuid5
 
-from app.agents.base import AgentRunResult, OpenDepotIntent
+from app.agents.base import AgentRunResult, OpenDepotIntent, draft_idempotency_key
 from app.integrations.agent_tools import (
     AgentToolCall,
     AgentToolGateway,
@@ -67,15 +66,6 @@ class ScriptedCustomerAgent:
     def __init__(self, gateway: AgentToolGateway) -> None:
         self._gateway = gateway
 
-    @staticmethod
-    def _idempotency_key(intent: OpenDepotIntent) -> UUID:
-        # Deterministic: retrying the same intent reuses the key, so the server can
-        # return the same application instead of creating a duplicate.
-        name = "|".join(
-            (intent.provider_id, intent.product_id, intent.channel_id, intent.customer_ref)
-        )
-        return uuid5(NAMESPACE_URL, f"trusteq:create_draft:{name}")
-
     def _create_draft(
         self, run: _Run, intent: OpenDepotIntent, provider_id: str, product_id: str, channel_id: str
     ) -> AgentToolResult | None:
@@ -86,7 +76,7 @@ class ScriptedCustomerAgent:
                 "product_id": product_id,
                 "channel_id": channel_id,
                 "customer_ref": intent.customer_ref,
-                "idempotency_key": str(self._idempotency_key(intent)),
+                "idempotency_key": str(draft_idempotency_key(intent)),
             },
         )
         if draft is None or not isinstance(draft.data.get("application_id"), str):

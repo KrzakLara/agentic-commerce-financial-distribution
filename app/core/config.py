@@ -3,13 +3,14 @@
 All variables use the ``TRUSTEQ_`` prefix and may be provided through the process
 environment or a local, git-ignored ``.env`` file. Defaults are safe and never
 require an external API key: the AI execution mode defaults to ``scripted``.
+The one exception to the prefix is the provider's usual ``ANTHROPIC_API_KEY``.
 """
 
 from enum import StrEnum
 from functools import lru_cache
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,8 +23,8 @@ class Environment(StrEnum):
 class AIExecutionMode(StrEnum):
     """How the customer-side agent decides on tool calls (ADR-09)."""
 
-    SCRIPTED = "scripted"  # deterministic, no API key
-    LLM = "llm"  # optional, behind an explicit flag; not implemented in Phase 00
+    SCRIPTED = "scripted"  # deterministic, no API key (the default)
+    LLM = "llm"  # a real model, only behind an explicit flag (Phase 05)
 
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -35,6 +36,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     app_name: str = "TRUSTEQ Secure Agentic Depot Onboarding"
@@ -53,7 +55,16 @@ class Settings(BaseSettings):
     llm_provider: str | None = None
     llm_model: str | None = None
     llm_base_url: str | None = None
-    llm_api_key: SecretStr | None = None
+    llm_api_key: SecretStr | None = Field(
+        default=None, validation_alias=AliasChoices("TRUSTEQ_LLM_API_KEY", "ANTHROPIC_API_KEY")
+    )
+    # Bounds of one LLM agent run: thinking depth, tokens per model request, model requests per
+    # run, seconds per request, and the SDK's retries of one request (no other retry loop exists).
+    llm_effort: Literal["low", "medium", "high"] = "medium"
+    llm_max_output_tokens: int = Field(default=4096, ge=256, le=16000)
+    llm_max_tool_rounds: int = Field(default=8, ge=1, le=20)
+    llm_timeout_seconds: float = Field(default=60.0, ge=5.0, le=300.0)
+    llm_max_retries: int = Field(default=1, ge=0, le=3)
 
     # DEV/TEST ONLY: the trusted bootstrap (`python -m scripts.dev_auth`, the demo, tests) may
     # issue an agent's first, narrow grant. There is NO HTTP endpoint for it. Agents always

@@ -18,9 +18,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Pinned to the last SDK release on "httpx". From 1.0 the SDK depends on "httpx2", and merely
+# having that installed silently moves starlette.testclient (the whole test suite) off the
+# approved "httpx" stack. Scripted mode needs neither this package nor an API key.
+llm = [
+    "anthropic==0.125.0",
+]
 dev = [
     "pytest>=8.2,<10.0",
     "ruff>=0.6,<1.0",
+    "anthropic==0.125.0",  # the LLM adapter's tests mock the API; they never call it
 ]
 
 [tool.setuptools.packages.find]

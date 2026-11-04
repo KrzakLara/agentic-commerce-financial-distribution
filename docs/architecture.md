@@ -18,7 +18,7 @@ app/
   services/        T2 trusted workflow: ApplicationService (create, read, transition)
   repositories/    SQLAlchemy/SQLite: ORM models, repositories, unit of work
   integrations/    ports (Protocols), MOCK adapters, agent tool-gateway contract + REST gateway
-  agents/          T0b external customer agent (scripted now, LLM later)
+  agents/          T0b external customer agent (scripted by default, a real LLM behind a flag)
 ```
 
 Allowed dependency direction (enforced partly by tests):

@@ -2,8 +2,8 @@
 
 This module is the ONLY contract the agent package may depend on. It defines the typed
 tool schemas (ADR-09: enum-like names, opaque ids, bounded strings, extra fields rejected)
-and the `AgentToolGateway` port. The bank-side implementation of the gateway (calling the
-REST API or an equivalent validated client) is added in Phase 01/02.
+and the `AgentToolGateway` port. Both agents (scripted, LLM) use the same six tools; the
+gateway implementation over the public REST API is `app.integrations.rest_gateway`.
 
 There are intentionally NO tools for confirming a handoff, approving KYC, signing a contract,
 marking a depot OPENED or reading compliance data. `request_handoff` and `submit_after_consent`

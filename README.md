@@ -2,7 +2,11 @@
 
 A modular-monolith FastAPI project for the TRUSTEQ GmbH AI Engineering case study.
 
-**Current status: Phase 04 - verified discovery, disclosures, attribution and human review.**
+**Current status: Phase 05 - a real LLM agent behind an explicit flag, measured on the 20 fixed
+cases of ADR-09 ([docs/phase-05-evaluation.md](docs/phase-05-evaluation.md)).** Scripted mode stays
+the default and needs no key.
+
+**Phase 04 - verified discovery, disclosures, attribution and human review.**
 Provider manifests are signed, versioned and expiring and are verified against the bank's own
 register (identity, domain, endpoint, capabilities, channels, no rollback); product terms and the
 attributed partner are bound into what the customer approves, so changed terms invalidate an old
@@ -102,7 +106,8 @@ Details: [docs/onboarding-flow.md](docs/onboarding-flow.md) (flow, handoff, reco
 
 Python 3.11 / 3.12 (developed on 3.12), FastAPI, Pydantic v2 + Pydantic Settings,
 SQLAlchemy 2.x (SQLite), Uvicorn, httpx, pytest, ruff. Dependencies are constrained in
-`pyproject.toml`. No LLM and no API key is used anywhere.
+`pyproject.toml`. The optional LLM agent adds the pinned `anthropic` SDK; nothing else uses a model
+or an API key.
 
 ## Project structure
 
@@ -118,10 +123,10 @@ Trusteq/
 │   ├── services/          # Application/Onboarding/Authorization/CustomerSession services, policy gate
 │   ├── repositories/      # ORM models, repositories, unit of work (SQLAlchemy/SQLite), schema upgrade
 │   ├── integrations/      # ports, MOCK adapters, verified catalog fixture, REST agent gateway + token store
-│   └── agents/            # ScriptedCustomerAgent (untrusted zone T0b)
+│   └── agents/            # ScriptedCustomerAgent and LlmCustomerAgent (both untrusted zone T0b)
 ├── tests/                 # pytest suite (+ fixtures/schema_v2.sql, schema_v3.sql for the upgrade tests)
-├── docs/                  # architecture, authorization, flow, trust boundaries, API, state machine, database, Phase 04 traceability
-├── scripts/               # setup.ps1, check.ps1, demo_happy/denied/manual_review.py, dev_auth.py, dev_operator.py, security_mutations.py
+├── docs/                  # architecture, authorization, flow, trust boundaries, API, state machine, database, Phase 04 traceability, Phase 05 evaluation + its result files
+├── scripts/               # setup.ps1, check.ps1, demo_happy/denied/manual_review.py, demo_llm.py, eval_llm.py + llm_eval_cases.py, dev_auth.py, dev_operator.py, security_mutations.py
 ├── .env.example  .gitignore  pyproject.toml  README.md
 ```
 
@@ -189,6 +194,28 @@ continue. `demo_manual_review` shows the synthetic compliance review (`customer_
 pressing **"Speak to a person"** (a forged CSRF token is refused; the answer is the same
 neutral "Request received"), the operator console (`list`, `show`, `request-info`, refused decisions, `add-evidence`,
 `decide RE_EVALUATE`), compliance attempt 2 `PASS`, submission, `OPENED` and a restart.
+
+## Scripted and real LLM modes
+
+**Scripted (the default):** nothing to configure, no key, no model. The three demos above always use
+it.
+
+**Real LLM (explicit opt-in):** the model only proposes tool calls. The six tools, the REST API and
+the bank's policy are the same. Put your key into the local, git-ignored `.env` (never into
+`.env.example`, never into a commit), then:
+
+```powershell
+# .env:  ANTHROPIC_API_KEY=<your key>
+.\.venv\Scripts\python.exe -m scripts.demo_llm       # one real interaction, start to finish (billed, a few cents)
+.\.venv\Scripts\python.exe -m scripts.eval_llm --mode scripted --output scripted.json   # offline baseline
+.\.venv\Scripts\python.exe -m scripts.eval_llm --mode llm --output my-run.json          # the 20 cases, live (billed)
+.\.venv\Scripts\python.exe -m scripts.eval_llm --report docs\evaluation\phase-05-live-results.json
+```
+
+Without a key both commands print `BLOCKED` and exit 3 without calling anything. To select the agent
+in your own code through `build_customer_agent`, set `TRUSTEQ_AI_EXECUTION_MODE=llm`,
+`TRUSTEQ_ENABLE_LLM=true` and `TRUSTEQ_LLM_PROVIDER=anthropic`; a missing key or SDK then fails closed.
+Model, limits, results and limitations: [docs/phase-05-evaluation.md](docs/phase-05-evaluation.md).
 
 ## Start FastAPI
 
@@ -304,7 +331,8 @@ The app runs with **no `.env` file and no API key**. To override settings:
 Copy-Item .env.example .env   # .env is git-ignored; never commit it
 ```
 
-All variables use the `TRUSTEQ_` prefix (see `.env.example`): app name, environment
+All variables use the `TRUSTEQ_` prefix, except the provider's usual `ANTHROPIC_API_KEY`
+(see `.env.example`): app name, environment
 (`development` / `test` / `production`), debug, database URL, log level/format, AI execution mode
 (`scripted` / `llm`), optional LLM settings, the DEV/TEST switches (agent bootstrap issuance,
 simulated customer sign-in, operator console), lifetimes (handoff, onboarding grant, bootstrap grant, status
@@ -321,7 +349,7 @@ secret in **production**; or `llm` mode without `TRUSTEQ_ENABLE_LLM=true`. Phase
 | Product information + disclosures | versioned terms, fees, conditions, risk, sources with digests, terms digest; receipts bound to exact versions and the action digest; stale approvals refused at confirm and submit | all content synthetic | provider feeds with legal sign-off, wallet-based signed consent, re-consent flow |
 | Partner attribution | registry-based, customer-confirmed, append-only; the agent cannot name a recipient | synthetic partners; no commission | contractual partner registry, commission settlement |
 | Human review | durable cases, generic customer acknowledgement, fixed operator decisions, re-evaluation as a new deterministic attempt, supervisor-only rejection, audit | synthetic operators and evidence references; MOCK compliance scenario switch | case management with SSO, RBAC, four-eyes, SLAs, evidence store |
-| Agent | scripted, REST only, no key | - | optional LLM behind an explicit flag (Phase 05) |
+| Agent | scripted (default, no key) and a real LLM behind an explicit flag: the same six tools, REST only; allowlisted, typed, bounded; measured on 20 fixed cases | every provider and catalog behind it | provider-side explainer, MCP/A2A adapters, production monitoring of model behaviour |
 | Agent authorization | **real and tested, controlled DEV implementation**: opaque bearer tokens stored as SHA-256 hashes; issuer, audience, expiry, `jti`, revocation, per-operation scopes, resource binding; single-use bootstrap; revoked at terminal states | first grant from a trusted DEV CLI | OAuth 2.0 / FAPI 2.0, sender-constrained tokens (DPoP/mTLS), RFC 9396 / RFC 8693 |
 | Customer authentication + intervention | server-side session (hashed secret, HttpOnly/SameSite=Strict/Secure-on-HTTPS cookies for the pages and the customer API, expiry, rotation) + per-target CSRF tokens; "Speak to a person" and `request-human` require both | **DEV simulation** of the sign-in itself; `X-Dev-Customer-Id` only on the Phase 02 JSON confirmation ceremony | bank-controlled strong authentication (online banking / eID / EUDI wallet), a customer case view, phone/chat channels |
 | KYC / compliance / contract / depot provider | the deterministic workflow around them; the signed callback is the only path to `OPENED` | **MOCK** results, `mock=true`, `MOCK-` references | contracted regulated providers, partner integration with mTLS |
@@ -348,7 +376,7 @@ secret in **production**; or `llm` mode without `TRUSTEQ_ENABLE_LLM=true`. Phase
 
 ## Next implementation phase
 
-**Phase 05** - optional LLM behind an explicit flag, 20-case evaluation (not started).
+**Phase 06** - stabilization and test evidence (not started).
 
 ## Git
 

@@ -60,8 +60,9 @@ def test_demo_never_prints_credentials_or_the_one_time_challenge() -> None:
 
 
 def test_demo_does_not_touch_project_data() -> None:
-    project_db = ROOT / "trusteq.db"
-    existed = project_db.exists()
+    project_db, env_file = ROOT / "trusteq.db", ROOT / ".env"
+    existed, env_existed = project_db.exists(), env_file.exists()  # a local .env is allowed
     assert run_demo("--no-restart").returncode == 0
     assert project_db.exists() == existed  # it never created or used the project database
-    assert not (ROOT / ".claude").exists() and not (ROOT / ".env").exists()
+    assert env_file.exists() == env_existed  # and it never creates a .env
+    assert not (ROOT / ".claude").exists()
