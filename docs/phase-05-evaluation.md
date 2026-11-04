@@ -39,7 +39,22 @@ draft was corrected and the test was left as it was.
 | Tools | the six tools, `strict: true`, `tool_choice: auto` | Forced tool choice is rejected by this model |
 | Prompt cache | system prompt + tools, 5 minutes | The same prefix is sent on every request |
 | Refusal fallback | none, on purpose | A server-side fallback could answer with another model, which contradicts a pinned, reproducible evaluation. A refusal ends the run safely instead |
-| Key | `ANTHROPIC_API_KEY` from the environment or the git-ignored `.env`, held as `SecretStr` | Never logged, printed or written to a result file (tested) |
+| Key | `ANTHROPIC_API_KEY` from the environment or the git-ignored `.env`, held as `SecretStr` | The code reads its value only to build the SDK client and, in the live evaluation, to check the answers for it. What was verified is listed below |
+
+**Scope of the key and secret checks.** They cover the outputs listed here, and they do not prove that a
+secret can never appear anywhere.
+
+- **Automated tests, with a fake key:** no key in `Settings` (`repr`, `model_dump`), in the agent's `repr` or in
+  an evaluation result record. The result files in this repository contain no bearer token, no `sk-ant-` value
+  and no unmasked one-time challenge. The console output of the three offline demos, which use no key, is tested
+  for unmasked one-time challenges; that of `demo_denied` and `demo_manual_review` also for bearer tokens.
+- **Live run, with the real key:** each of the 20 final answers was checked for the real key and for the agent's
+  bearer tokens (`no_credential_in_the_answer`).
+- **One-time check of commit `0e7545b`, not automated:** the real key was compared in memory with all 143 files
+  of the commit and with its message, with no match. `.env`, `.claude/` and `trusteq.db` are in no commit of the
+  history. A pattern scan for secret-shaped values found only the deliberate fake test key.
+- **Not tested:** no test captures the console output or logs of `scripts.demo_llm` or `scripts.eval_llm` during
+  a model run, the bank server's logs or the SDK's own logging.
 
 ## 3. Tool-calling architecture
 
@@ -80,7 +95,7 @@ sets them from the session, using the same key derivation as the scripted agent.
 | Impersonate the customer | The model cannot name a customer: the runtime binds it, and the bootstrap token is bound to one customer |
 | Perform or bypass KYC, sign, override compliance | No such tool. These checks run on the trusted side, after the customer's confirmation |
 | Create an OPENED account | No such tool. Only the provider's signed callback reaches OPENED |
-| Read another customer's application | The runtime holds no token for it. The bank answers 404, which the gateway reports as a body-less DENIED |
+| Read another customer's application | The runtime holds no token for that application, so its request carries none and the bank answers 401 (`authentication_required`). A valid token bound to a different application gets 404 (`not_found`), the same answer as for a missing application. The gateway reports both as a body-less DENIED. Measured offline on 2026-11-04: in the live run, AUTH-01 made no tool call, so neither answer occurred there |
 | Execute HTTP requests or Python | No such tool. An unknown tool name never reaches the gateway |
 | Trust catalog instructions | The tool layer forwards allow-listed structured fields only, so narrative provider text never reaches the model. The product name is the one provider-written free-text field that does; there it is only data in a tool result, and it cannot change a provider, a scope, a state or a tool |
 | See tokens or compliance reasons | The gateway's runtime holds the tokens and never returns them. Agents only ever see the coarse state |
@@ -149,8 +164,11 @@ two API outages in a row, reporting what ran; existing result files are not over
 ## Results
 
 **One complete live run, no case rerun: 20 of 20 cases passed.** Measured on 2026-11-04 from 14:29:41 to
-14:31:47 UTC. The Models API confirmed `claude-sonnet-5-5` (Claude Sonnet 5.5) before the run, and every
-response reported that model. Raw record: [evaluation/phase-05-live-results.json](evaluation/phase-05-live-results.json).
+14:31:47 UTC. The Models API confirmed `claude-sonnet-5-5` (Claude Sonnet 5.5) before the run. The result
+file records the model identifier of the final response of each of the 20 cases, and all 20 are
+`claude-sonnet-5-5`. The identifiers of the other 43 of the 63 responses were not recorded; every request
+named this model and no fallback model was configured. Raw record:
+[evaluation/phase-05-live-results.json](evaluation/phase-05-live-results.json).
 
 Read this next to [what the score does not show](#what-the-score-does-not-show).
 
