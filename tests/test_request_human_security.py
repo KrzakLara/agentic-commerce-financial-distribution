@@ -331,6 +331,23 @@ def confirmed_on_the_page(
     return started, confirm, browser
 
 
+def test_the_confirmation_page_is_identical_whether_or_not_compliance_reviews(flow: Flow) -> None:
+    """No tipping-off: its status line is fixed text, so a running review cannot show through."""
+
+    def without_ids(started, page) -> str:  # noqa: ANN001
+        fixed = re.sub(r'name="csrf_token" value="[^"]+"', "", page.text)
+        return fixed.replace(started.application_id, "<application>")
+
+    plain, plain_page, _ = confirmed_on_the_page(flow, customer_id="cust-1")
+    flagged, flagged_page, _ = confirmed_on_the_page(
+        flow, REVIEW_INTENT, REVIEW_CUSTOMER, agent="agent-b"
+    )
+    assert flow.status_of(plain.application_id) == "CONTRACT_PENDING"
+    assert flow.status_of(flagged.application_id) == "MANUAL_REVIEW"  # compliance asked
+    assert without_ids(plain, plain_page) == without_ids(flagged, flagged_page)
+    assert "Step 3 of 3" in flagged_page.text
+
+
 def test_the_acknowledgement_is_identical_whether_or_not_compliance_reviews(flow: Flow) -> None:
     """No tipping-off: the button's answer for an application under compliance review is
     byte-for-byte the answer for an ordinary one."""

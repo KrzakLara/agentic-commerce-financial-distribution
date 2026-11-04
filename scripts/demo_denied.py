@@ -295,8 +295,16 @@ def run(keep: bool) -> None:  # noqa: C901 - a linear, narrated script
         expect(state == "IN_PROGRESS", "the legitimate flow must continue")
 
         print(
-            "\nRESULT: PASS - every unauthorized or injected action was refused and audited; "
-            "the application's business state never changed (denied is not REJECTED)."
+            f"\nRESULT: PASS - every unauthorized or injected action was refused, {len(denials)} "
+            "of them with an audit event (listed above); the application's business state never "
+            "changed (denied is not REJECTED)."
+        )
+        print(
+            "Reminder: all data is synthetic. Known DEV limit these refusals do not cover (F-1): "
+            "customer identity is SIMULATED. Section 6 plays the customer with the DEV-only "
+            "X-Dev-Customer-Id header, and an untrusted caller with the handoff values could send "
+            "it too. OPENED still needs the provider's signature; production needs real customer "
+            "sessions."
         )
     finally:
         server.stop()

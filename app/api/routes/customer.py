@@ -499,6 +499,7 @@ async def confirm_handoff_form(
             application.application_id,
             csrf_token(customer.session_secret, CSRF_HUMAN, application.application_id),
         ),
+        step=pages.STEP_CONFIRMED,
     )
     return pages.html_response(page, 200)
 

@@ -170,6 +170,11 @@ ACTION_REQUIRED", 4 the generic acknowledgement and 5 the operator console with 
 decisions and the re-evaluation as attempt 2). Close on the transition list in section 7:
 `MANUAL_REVIEW -> COMPLIANCE_PENDING by OPERATOR`, `OPENED by DEPOT_PROVIDER_CONFIRMATION`.
 
+**For the live presentation, use
+[docs/presentation/phase-07-demo-runbook.md](docs/presentation/phase-07-demo-runbook.md):** the timed
+2-minute walkthrough with the customer page in a browser, speaker notes, the security disclosure, reset,
+troubleshooting and the offline fallback.
+
 ### What `demo_happy` shows
 
 It creates a throw-away database in your temp folder, starts the real server, and plays four

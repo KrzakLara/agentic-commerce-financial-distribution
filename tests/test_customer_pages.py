@@ -98,6 +98,49 @@ def test_pages_carry_strict_security_headers(flow: Flow) -> None:
     assert "<script" not in page.text.lower()  # no JavaScript at all
 
 
+def test_a_browser_can_submit_every_form_of_the_journey(flow: Flow) -> None:
+    """Finding F-8: with `Referrer-Policy: no-referrer`, a real browser sends `Origin: null` on
+    these same-origin posts, and the cross-site check refuses that, so no form could be used.
+
+    A test client sends no browser headers on its own. This one posts what Chrome sends under
+    `same-origin` (observed by hand in Phase 07) and pins the policy that makes it send them."""
+    browser = {"Sec-Fetch-Site": "same-origin", "Origin": "http://testserver"}
+    started = flow.start()
+    form = flow.customer_http.get(page_url(started), params={"token": started.nonce})
+    assert sign_in(flow, started, headers=browser).status_code == 303
+    page = flow.customer_http.get(page_url(started), params={"token": started.nonce})
+    confirmed = flow.customer_http.post(
+        f"{page_url(started)}/confirm",
+        data={"token": started.nonce, "action_digest": digest_in(page.text),
+              "csrf_token": flow.page_csrf(started)},
+        headers=browser,
+    )  # fmt: skip
+    assert confirmed.status_code == 200 and "Confirmation recorded" in confirmed.text
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', confirmed.text)
+    assert csrf, "no 'Speak to a person' form on the page"
+    asked = flow.customer_http.post(
+        f"/customer/applications/{started.application_id}/request-human",
+        data={"csrf_token": csrf.group(1), "category": "OTHER"},
+        headers=browser,
+    )
+    assert asked.status_code == 200 and "Request received" in asked.text
+    for response in (form, page, confirmed, asked):
+        assert response.headers["referrer-policy"] == "same-origin"
+
+
+def test_each_step_says_where_the_customer_is_and_who_decides(flow: Flow) -> None:
+    started = flow.start()
+    form = flow.customer_http.get(page_url(started), params={"token": started.nonce})
+    assert "Step 1 of 3" in form.text and started.application_id not in form.text
+    sign_in(flow, started)
+    page = flow.customer_http.get(page_url(started), params={"token": started.nonce})
+    assert "Step 2 of 3" in page.text and "waiting for your confirmation" in page.text
+    assert "Prepared by an AI agent" in page.text and "simulated in this prototype" in page.text
+    result = confirm_form(flow, started)
+    assert "Step 3 of 3" in result.text and "The account is not open yet" in result.text
+    assert "OPENED" not in result.text  # the page never claims an outcome the provider owns
+
+
 def test_the_confirm_button_completes_the_ceremony_end_to_end(flow: Flow) -> None:
     started = flow.start()
     sign_in(flow, started)

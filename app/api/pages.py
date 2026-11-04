@@ -32,7 +32,11 @@ button.secondary{background:#fff;color:#1f6feb;border:1px solid #1f6feb}
 .human{margin-top:1.5rem;padding-top:1rem;border-top:1px solid #d0d7de}
 select{font-size:1rem;padding:.35rem}
 input[type=text]{font-size:1rem;padding:.4rem;width:16rem}
-.ok{color:#116329}.err{color:#a40e26}
+.ok,.err{padding:.7rem .9rem;border-radius:6px;border:1px solid}
+.ok{color:#116329;background:#e9f7ee;border-color:#9ad8ae}
+.err{color:#a40e26;background:#fdecee;border-color:#f0a7b0}
+.status{background:#eef4ff;border:1px solid #b6d0ff;padding:.6rem .9rem;border-radius:6px}
+.agent{background:#f6f8fa;border-left:4px solid #1f6feb;padding:.6rem .9rem}
 """
 
 _BANNER = (
@@ -41,11 +45,32 @@ _BANNER = (
     "and nothing here opens a real account or creates a legally valid contract.</div>"
 )
 
+# Where the customer is: (step, status). Fixed text on purpose, never the live workflow state,
+# which would tell the customer whether a compliance review is running (no tipping-off).
+STEP_SIGN_IN = ("Step 1 of 3: Sign in.", "Application details stay hidden until you sign in.")
+STEP_CONFIRM = (
+    "Step 2 of 3: Review and confirm.",
+    "Application status: waiting for your confirmation.",
+)
+STEP_CONFIRMED = (
+    "Step 3 of 3: Confirmation recorded.",
+    "Application status: in progress with the bank. The account is not open yet: only the signed "
+    "confirmation of the depot provider (MOCK) can open it.",
+)
+
+_AGENT_NOTICE = (
+    '<p class="agent"><strong>Prepared by an AI agent - your decision.</strong> This page refuses '
+    "the agent's credentials, so the agent cannot confirm it for you. The customer identity itself "
+    "is simulated in this prototype.</p>"
+)
+
 _SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "X-Frame-Options": "DENY",
     "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
+    # Not "no-referrer": with it, browsers send `Origin: null` on these same-origin form posts and
+    # the cross-site check refuses every form (finding F-8). Other origins still get no referrer.
+    "Referrer-Policy": "same-origin",
     "Content-Security-Policy": (
         "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'"
     ),
@@ -64,11 +89,16 @@ def html_response(content: str, status_code: int = 200) -> HTMLResponse:
     return HTMLResponse(content, status_code=status_code, headers=_SECURITY_HEADERS)
 
 
+def _progress(step: tuple[str, str]) -> str:
+    return f'<p class="status"><strong>{escape(step[0])}</strong> {escape(step[1])}</p>'
+
+
 def sign_in_page(
     handoff_id: str, token: str, error: str | None = None, *, login_csrf: str = ""
 ) -> str:
     notice = f'<p class="err">{escape(error)}</p>' if error else ""
     body = (
+        f"{_progress(STEP_SIGN_IN)}"
         "<p>Please sign in as the customer to review and confirm this request.</p>"
         f"{notice}"
         "<p><em>Simulated sign-in (development only). In production this step is the bank's "
@@ -107,8 +137,7 @@ def review_page(
             "Exact requested action",
             "Open a securities account (Wertpapierdepot) for you with the provider above, "
             "for this product, through this channel, and record your confirmation of the "
-            "contract and the disclosure below. The AI agent that prepared this request "
-            "cannot confirm it for you.",
+            "contract and the disclosure below.",
         ),
         (
             "Disclosure document",
@@ -121,6 +150,7 @@ def review_page(
     rows[4:4] = _terms_rows(product, channel, action.terms_digest)
     table = "".join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in rows)
     body = (
+        f"{_progress(STEP_CONFIRM)}{_AGENT_NOTICE}"
         f"<table>{table}</table>"
         f'<div class="risk"><strong>Risk disclosure (MOCK text)</strong><br>'
         f"{escape(review.document_text)}</div>"
@@ -186,12 +216,16 @@ def _terms_rows(
 
 
 def result_page(
-    title: str, message: str, ok: bool, human_request: tuple[str, str] | None = None
+    title: str,
+    message: str,
+    ok: bool,
+    human_request: tuple[str, str] | None = None,
+    step: tuple[str, str] | None = None,
 ) -> str:
     """A short outcome page; `human_request` = (application_id, CSRF token) adds the
-    "Speak to a person" form (e.g. after a confirmation)."""
+    "Speak to a person" form (e.g. after a confirmation); `step` adds the progress line."""
     css = "ok" if ok else "err"
-    body = f'<p class="{css}">{escape(message)}</p>'
+    body = f'{_progress(step) if step else ""}<p class="{css}">{escape(message)}</p>'
     if human_request is not None:
         body += human_request_form(*human_request)
     return _document(title, body)
