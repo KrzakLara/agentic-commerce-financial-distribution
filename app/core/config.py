@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # gone. Never active in production (see `dev_agent_bootstrap_active`): production has no
     # way to issue agent tokens, so every protected /v1 route answers 401 (fail closed).
     dev_agent_bootstrap_enabled: bool = True
-    # DEV/TEST ONLY simulated *customer* sign-in (X-Dev-Customer-Id header / dev sign-in page).
+    # DEV/TEST ONLY simulated *customer* sign-in (the dev sign-in page).
     # Separate from the agent credentials above. Not digital identity verification; never
     # active in production.
     dev_customer_auth_enabled: bool = True

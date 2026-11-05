@@ -40,7 +40,7 @@ from app.integrations.catalog_fixture import (
     republish,
 )
 from app.integrations.rest_gateway import RestAgentToolGateway
-from tests.flow import INTENT, Flow
+from tests.flow import INTENT, Flow, confirm_csrf_headers
 
 ROOT = Path(__file__).resolve().parent.parent
 FAKE_KEY = "sk-ant-test-not-a-real-key"  # noqa: S105
@@ -527,11 +527,12 @@ def test_a_complete_journey_with_a_fake_model_uses_the_same_contract_as_the_scri
     app_id = started.application_id or ""
     handoff = next(s for s in started.steps if s.tool is AgentToolName.REQUEST_HANDOFF)
     url = started.confirmation_url or ""
-    confirmed = flow.customer_http.post(
-        url[url.index("/customer/handoffs/") :].split("?")[0].replace("/customer", "/v1/customer")
-        + "/confirm",
+    path = url[url.index("/customer/handoffs/") :].split("?")[0]
+    browser = flow.customer_browser(INTENT.customer_ref)
+    confirmed = browser.post(
+        path.replace("/customer", "/v1/customer") + "/confirm",
         json={"nonce": url.split("token=")[1], "action_digest": handoff.data["action_digest"]},
-        headers={"X-Dev-Customer-Id": INTENT.customer_ref},
+        headers=confirm_csrf_headers(browser, path.rsplit("/", 1)[1]),
     )
     assert confirmed.status_code == 200
 

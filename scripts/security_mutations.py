@@ -226,7 +226,8 @@ MUTANTS = [
       CUSTOMER,
       ("    customer = session_customer(request, settings, sessions, cookie)\n"
        "    if customer is None or customer.session_secret is None:",
-       "    customer = header_customer(settings, request.headers.get(DEV_CUSTOMER_HEADER))\n"
+       '    header = request.headers.get("X-Dev-Customer-Id")\n'
+       "    customer = CustomerContext(header) if is_valid_customer_id(header) else None\n"
        "    if customer is None:"),
       ("    if not csrf_matches(customer.session_secret, CSRF_HUMAN, application_id, "
        "presented_csrf):",
@@ -239,6 +240,22 @@ MUTANTS = [
       ('    if _cross_site(request):\n'
        '        deny(AuditActorType.CUSTOMER, None, "cross_site_request")',
        '    if False:\n        deny(AuditActorType.CUSTOMER, None, "cross_site_request")')),
+    # --- gap closure, finding F-1: the JSON confirmation needs the session + CSRF -----------
+    m("M56", "the JSON confirmation trusts the self-asserted customer header again", CUSTOMER,
+      ("    customer = session_customer(request, settings, sessions, API_SESSION_COOKIE)\n"
+       "    if customer is None or customer.session_secret is None:",
+       '    header = request.headers.get("X-Dev-Customer-Id")\n'
+       "    customer = CustomerContext(header) if is_valid_customer_id(header) else None\n"
+       "    if customer is None:"),
+      ("    if not csrf_matches(customer.session_secret, CSRF_CONFIRM, handoff_id, csrf_header):",
+       "    if False:")),
+    m("M57", "the JSON confirmation's CSRF token is not checked", CUSTOMER,
+      ("    if not csrf_matches(customer.session_secret, CSRF_CONFIRM, handoff_id, csrf_header):",
+       "    if False:")),
+    m("M58", "the JSON confirmation accepts cross-site browser requests", CUSTOMER,
+      ("    if _cross_site(request):\n        raise CrossSiteRequestError()\n"
+       "    customer = session_customer(request, settings, sessions, API_SESSION_COOKIE)",
+       "    customer = session_customer(request, settings, sessions, API_SESSION_COOKIE)")),
 ]  # fmt: skip
 
 

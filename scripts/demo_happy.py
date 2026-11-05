@@ -41,6 +41,7 @@ from pathlib import Path
 import httpx
 
 from app.agents import OpenDepotIntent, ScriptedCustomerAgent
+from app.api.customer_auth import API_COOKIE_PATH, API_SESSION_COOKIE
 from app.core.config import Environment, Settings
 from app.integrations.agent_credentials import AgentCredentials
 from app.integrations.agent_tools import AgentToolName
@@ -49,6 +50,7 @@ from app.integrations.rest_gateway import RestAgentToolGateway
 from app.repositories.database import create_db_engine, create_session_factory
 from app.repositories.sqlalchemy_repositories import SqlAlchemyUnitOfWork
 from app.services.authorization_service import AuthorizationService, IssuedToken
+from app.services.customer_session_service import csrf_token
 
 ROOT = Path(__file__).resolve().parent.parent
 CALLBACK_PATH = "/internal/depot-provider/confirmations"
@@ -189,6 +191,35 @@ def code(response: httpx.Response) -> str:
     except ValueError:
         error = ""
     return f"HTTP {response.status_code} {error}".rstrip()
+
+
+def sign_in(browser: httpx.Client, customer_id: str) -> None:
+    """The DEV sign-in form, as a browser submits it: a server-side session in HttpOnly cookies."""
+    handoff_id, token = "hnd-sign-in", "t" * 24
+    form = browser.get(f"/customer/handoffs/{handoff_id}", params={"token": token})
+    login_csrf = re.search(r'name="login_csrf" value="([^"]+)"', form.text)
+    if login_csrf is None:
+        raise DemoFailure("the sign-in form has no CSRF token")
+    response = browser.post(
+        "/customer/dev-login",
+        data={"customer_id": customer_id, "handoff_id": handoff_id, "token": token,
+              "login_csrf": login_csrf.group(1)},
+        follow_redirects=False,
+    )  # fmt: skip
+    expect(response.status_code == 303, f"dev sign-in failed: {response.status_code}")
+
+
+def confirm_as_signed_in_customer(
+    browser: httpx.Client, customer_id: str, handoff_id: str, nonce: str, action_digest: str
+) -> httpx.Response:
+    """The customer JSON ceremony: the customer's session plus its CSRF token for this handoff."""
+    sign_in(browser, customer_id)
+    secret = browser.cookies.get(API_SESSION_COOKIE, path=API_COOKIE_PATH) or ""
+    return browser.post(
+        f"/v1/customer/handoffs/{handoff_id}/confirm",
+        json={"nonce": nonce, "action_digest": action_digest},
+        headers={"X-CSRF-Token": csrf_token(secret, "confirm", handoff_id)},
+    )
 
 
 def read_db(db_path: Path) -> sqlite3.Connection:

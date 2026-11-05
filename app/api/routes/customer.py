@@ -1,7 +1,9 @@
 """Customer-side confirmation (bank-controlled channel).
 
-* ``POST /v1/customer/handoffs/{id}/confirm`` - the JSON ceremony from ADR section 05 (DEV
-  customer context: ``X-Dev-Customer-Id``).
+* ``POST /v1/customer/handoffs/{id}/confirm`` - the JSON ceremony from ADR section 05: requires
+  the customer's SERVER-SIDE session (cookie ``trusteq_customer_api``) and its CSRF token
+  (``X-CSRF-Token``), like the form on the page. The self-asserted DEV header that this route
+  used to accept (finding F-1) is gone.
 * ``POST /v1/customer/applications/{id}/request-human`` - the customer asks for a person
   (Phase 04): requires the customer's SERVER-SIDE session (cookie ``trusteq_customer_api``) and
   its CSRF token (``X-CSRF-Token``); the self-asserted DEV header is not accepted here.
@@ -18,17 +20,15 @@ import re
 from typing import Annotated
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Depends, Header, Path, Request, Response, status
+from fastapi import APIRouter, Header, Path, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.security import APIKeyHeader
 
 from app.api import pages
 from app.api.customer_auth import (
     API_SESSION_COOKIE,
     COOKIE_PATH,
     CSRF_HEADER,
-    DEV_CUSTOMER_HEADER,
     LOGIN_COOKIE,
     LOGIN_COOKIE_MAX_AGE,
     SESSION_COOKIE,
@@ -36,7 +36,6 @@ from app.api.customer_auth import (
     CustomerContext,
     agent_credentials_presented,
     cookie_is_secure,
-    header_customer,
     is_valid_customer_id,
     session_customer,
 )
@@ -84,16 +83,6 @@ CSRF_CONFIRM = "confirm"
 CSRF_LOGIN = "login"
 CSRF_HUMAN = "human"  # bound to (session, application)
 
-_dev_customer_header = APIKeyHeader(
-    name=DEV_CUSTOMER_HEADER,
-    scheme_name="DevCustomerHeader",
-    description=(
-        "DEV/TEST ONLY. Simulated customer sign-in for the bank-controlled confirmation. "
-        "This is not identity verification and is disabled in production."
-    ),
-    auto_error=False,
-)
-
 
 def _presented_agent_id(request: Request, authorization: AuthorizationService) -> str | None:
     """Which agent (if any) the presented bearer token belongs to - for the audit trail only."""
@@ -124,10 +113,11 @@ def _refuse_agent_credentials(
     response_model=HandoffConfirmResponse,
     summary="Customer confirms the exact approved action (bank-controlled ceremony)",
     description=(
-        "Requires the DEV/TEST simulated customer context (`X-Dev-Customer-Id`), the one-time "
-        "`nonce` and the `action_digest` the customer reviewed. Agent credentials are never "
-        "accepted here: a request with an `Authorization` header is refused. Fails closed and "
-        "changes nothing on any mismatch."
+        "Requires the customer's server-side session (HttpOnly cookie `trusteq_customer_api`, "
+        "set by the bank's - in this prototype SIMULATED - sign-in), the session's CSRF token "
+        "for this handoff in `X-CSRF-Token`, the one-time `nonce` and the `action_digest` the "
+        "customer reviewed. The self-asserted `X-Dev-Customer-Id` header is not accepted; agent "
+        "credentials are refused and audited. Fails closed and changes nothing on any mismatch."
     ),
     responses={
         401: {"model": ErrorResponse},
@@ -142,16 +132,34 @@ def confirm_handoff(
     request: Request,
     settings: SettingsDep,
     service: OnboardingServiceDep,
+    sessions: CustomerSessionServiceDep,
     authorization: AuthorizationServiceDep,
     correlation_id: CorrelationIdDep,
-    customer_header: Annotated[str | None, Depends(_dev_customer_header)],
+    csrf_header: Annotated[
+        str | None,
+        Header(
+            alias=CSRF_HEADER,
+            description="The session's CSRF token for this handoff (from the bank page).",
+        ),
+    ] = None,
 ) -> HandoffConfirmResponse:
     if agent_credentials_presented(request):
         _refuse_agent_credentials(request, handoff_id, service, authorization, correlation_id)
         raise AuthenticationRequiredError()
-    customer = header_customer(settings, customer_header)
-    if customer is None:
-        raise AuthenticationRequiredError()
+    if _cross_site(request):
+        raise CrossSiteRequestError()
+    customer = session_customer(request, settings, sessions, API_SESSION_COOKIE)
+    if customer is None or customer.session_secret is None:
+        raise AuthenticationRequiredError()  # missing, invalid, expired or revoked session
+    if not csrf_matches(customer.session_secret, CSRF_CONFIRM, handoff_id, csrf_header):
+        service.record_customer_channel_denial(
+            handoff_id=handoff_id,
+            actor_type=AuditActorType.CUSTOMER,
+            actor_id=customer.customer_id,
+            reason="csrf_token_invalid",
+            correlation_id=correlation_id,
+        )
+        raise CsrfTokenInvalidError()
     application = service.confirm_handoff(
         customer_id=customer.customer_id,
         handoff_id=handoff_id,

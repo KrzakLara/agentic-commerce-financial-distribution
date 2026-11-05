@@ -104,10 +104,11 @@ Failure behaviour (all fail closed, change no state, and are audited):
 
 A real deployment needs the customer to authenticate to the bank (eID, EUDI wallet, online
 banking) in a channel the bank controls. This prototype has **none of that**. It provides a
-clearly labelled stand-in: the dev sign-in form (which now creates a server-side session, see
-above) and, for the JSON ceremony, the header `X-Dev-Customer-Id`. **Anyone who can use them can
-claim to be any customer** - preventing exactly that is the job of the real identity channel.
-Both are disabled in production (every customer route then answers 401). What *is* real: the
+clearly labelled stand-in: the dev sign-in form, which creates a server-side session (see above).
+**Anyone who can use it, including a client that scripts it, can claim to be any customer** -
+preventing exactly that is the job of the real identity channel. The `X-Dev-Customer-Id` header is
+no longer accepted anywhere (F-1, see [phase-07-gap-closure.md](phase-07-gap-closure.md)). The
+sign-in is disabled in production (every customer route then answers 401). What *is* real: the
 customer credential is completely separate from the agent's bearer tokens and never
 interchangeable with them.
 
@@ -178,7 +179,7 @@ comes back stays parked - visible to operators, not lost.
 
 ## Known limitations (after Phase 04)
 
-* The customer sign-in and the JSON ceremony's `X-Dev-Customer-Id` header are DEV simulations.
+* The customer sign-in is a DEV simulation.
 * Agent tokens are bearer tokens: a stolen token works until it expires or is revoked (no DPoP /
   mTLS binding); there is no refresh flow (a lost token is re-issued by an operator).
 * The callback shared secret is a mock credential; a real provider needs mutual TLS / signed messages.
@@ -262,8 +263,8 @@ sometimes after"). It sends one of four fixed categories (no free text) to
 5. then the workflow: only the application's OWN customer (else 404, same answer as an unknown
    id), at most one active case (a repeat joins it), the same neutral acknowledgement every time.
 
-The self-asserted `X-Dev-Customer-Id` header is NOT a credential here (it remains only for the
-Phase 02 JSON confirmation ceremony). Every refusal is audited as `review.human_request_denied`
+The self-asserted `X-Dev-Customer-Id` header is NOT a credential here or anywhere else. Every
+refusal is audited as `review.human_request_denied`
 with a machine reason only (`agent_credentials_presented`, `cross_site_request`,
 `no_customer_session`, `csrf_token_invalid`, `not_the_customer`, `unknown_application`) - never
 with compliance detail.

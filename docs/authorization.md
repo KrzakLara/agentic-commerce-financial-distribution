@@ -160,7 +160,7 @@ applications usable after the schema upgrade.
 | Actor | Credential | Where it is accepted |
 |---|---|---|
 | Agent | opaque bearer token (scoped, application-bound) | `/v1/applications...` only. Refused (401, audited) on every customer route, including `request-human` |
-| Customer | server-side session from the SIMULATED sign-in (hashed secret; HttpOnly, SameSite=Strict cookies `trusteq_customer_session` path `/customer` and `trusteq_customer_api` path `/v1/customer`; Secure on HTTPS; server-enforced expiry and rotation) plus a per-target CSRF token; the `X-Dev-Customer-Id` header only for the Phase 02 JSON confirmation ceremony | customer routes only; `request-human` (API and page button) requires the session AND its CSRF token for that application, and that the customer is the application's own customer (else 404) |
+| Customer | server-side session from the SIMULATED sign-in (hashed secret; HttpOnly, SameSite=Strict cookies `trusteq_customer_session` path `/customer` and `trusteq_customer_api` path `/v1/customer`; Secure on HTTPS; server-enforced expiry and rotation) plus a per-target CSRF token; the `X-Dev-Customer-Id` header is not accepted anywhere (F-1, see [phase-07-gap-closure.md](phase-07-gap-closure.md)) | customer routes only; `request-human` (API and page button) requires the session AND its CSRF token for that application, and that the customer is the application's own customer (else 404) |
 | Operator | synthetic DEV identity from `DEV_OPERATORS` (`op-reviewer-1` REVIEWER, `op-supervisor-1` SUPERVISOR) | the trusted dev console only (`scripts/dev_operator.py`); there is no operator HTTP route |
 
 An operator principal is re-checked against the directory on every action (a self-promoted role

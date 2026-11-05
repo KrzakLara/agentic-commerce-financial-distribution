@@ -1,0 +1,19 @@
+{
+  "request": {
+    "contract_version": "v2",
+    "idempotency_key": "app-fixture",
+    "application": {
+      "application_id": "app-fixture",
+      "provider_id": "fixture-bank",
+      "product_id": "depot-basic",
+      "channel_id": "direct"
+    }
+  },
+  "response": {
+    "contract_version": "v2",
+    "submission": {
+      "reference": "MOCK-DEPOT-app-fixture",
+      "status": "ACCEPTED"
+    }
+  }
+}

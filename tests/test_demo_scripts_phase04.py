@@ -53,6 +53,7 @@ def test_the_denied_demo_shows_refusals_without_a_business_rejection() -> None:
         "-> REJECTED [endpoint_not_approved]",
         "-> REJECTED [unknown_provider]",
         "request-human with only a self-asserted customer id -> HTTP 401",
+        "confirm with leaked values and a self-asserted customer id -> HTTP 401",
         "ANOTHER signed-in customer asks for a person here -> HTTP 404",
         "NOT REJECTED",
         "agent now sees IN_PROGRESS",

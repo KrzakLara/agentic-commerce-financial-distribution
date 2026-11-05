@@ -42,6 +42,7 @@ from scripts.demo_happy import (
     DemoFailure,
     Server,
     Timeline,
+    confirm_as_signed_in_customer,
     expect,
     free_port,
     mask,
@@ -106,13 +107,12 @@ def run(settings: Settings) -> None:
         match = re.search(r"/customer/handoffs/([^?]+)\?token=(.+)$", result.confirmation_url or "")
         expect(match is not None, "no confirmation link from the server")
         handoff = next(s for s in result.steps if s.tool is AgentToolName.REQUEST_HANDOFF)
-        confirmed = customer_http.post(
-            f"/v1/customer/handoffs/{match.group(1)}/confirm",  # type: ignore[union-attr]
-            json={
-                "nonce": match.group(2),  # type: ignore[union-attr]
-                "action_digest": handoff.data["action_digest"],
-            },
-            headers={"X-Dev-Customer-Id": CUSTOMER_ID},
+        confirmed = confirm_as_signed_in_customer(
+            customer_http,
+            CUSTOMER_ID,
+            match.group(1),  # type: ignore[union-attr]
+            match.group(2),  # type: ignore[union-attr]
+            handoff.data["action_digest"],
         )
         expect(confirmed.status_code == 200, f"customer confirmation: {confirmed.status_code}")
         tl.say("CUSTOMER", "confirmed the exact action; MOCK KYC, compliance and contract ran")

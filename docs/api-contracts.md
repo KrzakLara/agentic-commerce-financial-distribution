@@ -22,7 +22,7 @@ bank-approved authorization server and API security controls.
 | `GET /v1/applications/{id}` | agent | status token of `{id}`, `read_status` | Own application only, generic state, no raw compliance detail |
 | `POST /v1/applications/{id}/handoff` | agent | onboarding token of `{id}`, `request_handoff` | Short-lived one-time request for direct customer approval; digest fixed |
 | `POST /v1/applications/{id}/submit` | agent | onboarding token of `{id}`, `submit_after_consent` | Only after server-verified consent, KYC/compliance, contract prerequisites |
-| `POST /v1/customer/handoffs/{id}/confirm` | customer (DEV sim.) | `X-Dev-Customer-Id`; an `Authorization` header is refused | Bank-controlled ceremony binding customer, application, exact action |
+| `POST /v1/customer/handoffs/{id}/confirm` | customer (simulated sign-in) | the customer's **server-side session** (HttpOnly cookie `trusteq_customer_api`) **and** its CSRF token for this handoff in `X-CSRF-Token`; `X-Dev-Customer-Id` is NOT accepted; any `Authorization` header is refused (401, audited); cross-site browser requests 403 | Bank-controlled ceremony binding customer, application, exact action |
 | `POST /internal/depot-provider/confirmations` | trusted provider (MOCK) | HMAC signature (no bearer token) | Replay/duplicate/transition checks; the only path to `OPENED` (hidden, disabled by default) |
 | `POST /v1/customer/applications/{id}/request-human` | customer (simulated sign-in) | the customer's **server-side session** (HttpOnly cookie `trusteq_customer_api`, path `/v1/customer`) **and** its CSRF token for this application in `X-CSRF-Token`; `X-Dev-Customer-Id` is NOT accepted; any `Authorization` header is refused (401, audited); cross-site browser requests 403 | Body `{"category": ...}` from a fixed list (no free text). Opens - or joins - the application's single active review case and pauses the workflow at its current step where possible. `202` with the same generic acknowledgement in every case; `401` no/expired/revoked session; `403` missing or foreign CSRF token; `404` another customer's or an unknown application. The page button posts the same request to `POST /customer/applications/{id}/request-human` (not part of the OpenAPI contract) |
 | `GET /v1/customer/cases/{id}` | - | - | **Not implemented (deliberately)**: a case status could reveal a compliance review (tipping-off). See [phase-04-traceability.md](phase-04-traceability.md) |
@@ -120,18 +120,19 @@ No body. `201`, `Cache-Control: no-store`:
 The URL is a pointer for the customer, **not** an authorization. A new handoff supersedes an
 unused earlier one. Errors: authorization errors above, `409 invalid_state`.
 
-### `POST /v1/customer/handoffs/{handoff_id}/confirm` (customer, DEV sim.)
+### `POST /v1/customer/handoffs/{handoff_id}/confirm` (customer, simulated sign-in)
 
 ```http
 POST /v1/customer/handoffs/hnd-3f.../confirm
-X-Dev-Customer-Id: demo-customer-1
+Cookie: trusteq_customer_api=<session secret>
+X-CSRF-Token: <the session's token for this handoff>
 {"nonce":"<one-time challenge>","action_digest":"9c1e..."}
 ```
 
 `200 {"handoff_id":"hnd-3f...","application_id":"app-a6...","state":"IN_PROGRESS"}`. Refusals leave
-all state unchanged: `401` (no customer context, or ANY `Authorization` header - an agent token is
-never a customer credential; audited as `agent_credentials_presented`), `403 handoff_invalid |
-customer_mismatch | mandate_inactive` (the application's onboarding grant ended), `409
+all state unchanged: `401` (no active customer session, or ANY `Authorization` header - an agent
+token is never a customer credential; audited as `agent_credentials_presented`), `403
+cross_site_request | csrf_token_invalid | handoff_invalid | customer_mismatch | mandate_inactive` (the application's onboarding grant ended), `409
 handoff_not_active | action_digest_mismatch | invalid_state`, `410 handoff_expired`, `422`.
 
 ### `POST /v1/applications/{id}/submit` (onboarding token)

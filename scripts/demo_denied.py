@@ -47,11 +47,13 @@ from scripts.demo_happy import (
     agent_state,
     bearer,
     code,
+    confirm_as_signed_in_customer,
     expect,
     free_port,
     mask,
     read_db,
     remove_tree,
+    sign_in,
 )
 
 AGENT_ID = "demo-agent-untrusted"
@@ -204,6 +206,16 @@ def run(keep: bool) -> None:  # noqa: C901 - a linear, narrated script
             "CUSTOMER", f"request-human with only a self-asserted customer id -> {code(claimed)}"
         )
         expect(claimed.status_code == 401, "a header is not a customer session")
+        header_confirm = customer_http.post(
+            f"/v1/customer/handoffs/{handoff_id}/confirm",
+            json={"nonce": nonce, "action_digest": step.data["action_digest"]},
+            headers={"X-Dev-Customer-Id": CUSTOMER_ID},
+        )
+        tl.say(
+            "CUSTOMER",
+            f"confirm with leaked values and a self-asserted customer id -> {code(header_confirm)}",
+        )
+        expect(header_confirm.status_code == 401, "a header must not record a consent")
         other_customer = httpx.Client(base_url=server.base_url, timeout=15)
         sign_in(other_customer, OTHER_CUSTOMER_ID)
         secret = other_customer.cookies.get(API_SESSION_COOKIE, path=API_COOKIE_PATH) or ""
@@ -284,10 +296,8 @@ def run(keep: bool) -> None:  # noqa: C901 - a linear, narrated script
 
         # --- 6. the real customer is unaffected ---------------------------------------------------
         tl.heading("6. The real customer is unaffected and can still continue")
-        confirmed = customer_http.post(
-            f"/v1/customer/handoffs/{handoff_id}/confirm",
-            json={"nonce": nonce, "action_digest": step.data["action_digest"]},
-            headers={"X-Dev-Customer-Id": CUSTOMER_ID},
+        confirmed = confirm_as_signed_in_customer(
+            customer_http, CUSTOMER_ID, handoff_id, nonce, step.data["action_digest"]
         )
         expect(confirmed.status_code == 200, f"customer confirmation failed: {code(confirmed)}")
         state = agent_state(agent_http, tokens.status, app_id)
@@ -301,10 +311,9 @@ def run(keep: bool) -> None:  # noqa: C901 - a linear, narrated script
         )
         print(
             "Reminder: all data is synthetic. Known DEV limit these refusals do not cover (F-1): "
-            "customer identity is SIMULATED. Section 6 plays the customer with the DEV-only "
-            "X-Dev-Customer-Id header, and an untrusted caller with the handoff values could send "
-            "it too. OPENED still needs the provider's signature; production needs real customer "
-            "sessions."
+            "customer identity is SIMULATED. Section 6 signs in through the DEV sign-in form, "
+            "which accepts any customer ID, so an untrusted caller could script it too. OPENED "
+            "still needs the provider's signature; production needs real bank authentication."
         )
     finally:
         server.stop()
@@ -365,22 +374,6 @@ def catalog_attacks() -> list[tuple[str, CatalogFixture, dict[str, object]]]:
     )
     attacks.append(("fake provider with a copied LEI, own key", fake, {"trust_anchors": anchors}))
     return attacks
-
-
-def sign_in(browser: httpx.Client, customer_id: str) -> None:
-    """The DEV sign-in form, as a browser submits it: a server-side session in HttpOnly cookies."""
-    handoff_id, token = "hnd-sign-in", "t" * 24
-    form = browser.get(f"/customer/handoffs/{handoff_id}", params={"token": token})
-    login_csrf = re.search(r'name="login_csrf" value="([^"]+)"', form.text)
-    if login_csrf is None:
-        raise DemoFailure("the sign-in form has no CSRF token")
-    response = browser.post(
-        "/customer/dev-login",
-        data={"customer_id": customer_id, "handoff_id": handoff_id, "token": token,
-              "login_csrf": login_csrf.group(1)},
-        follow_redirects=False,
-    )  # fmt: skip
-    expect(response.status_code == 303, f"dev sign-in failed: {response.status_code}")
 
 
 def snapshot(db_path: Path, app_id: str) -> dict[str, object]:

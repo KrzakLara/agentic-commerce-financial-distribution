@@ -5,26 +5,23 @@ controls (eID / EUDI wallet / online banking), independently of the AI agent. No
 exists in this prototype. This module provides a clearly labelled stand-in so the rest of the
 ceremony (identity binding, digest binding, one-time challenge) can be built and tested.
 
-Customer contexts, all switched off in production (`dev_customer_auth_active`):
-
-* A SERVER-SIDE session (Phase 03), created by the DEV sign-in form. The server stores only the
-  hash of a random secret and decides expiry and revocation itself. The browser receives that
-  secret in HttpOnly, SameSite=Strict cookies (Secure on HTTPS), each scoped to one customer
-  prefix (Phase 04): ``trusteq_customer_session`` (path ``/customer``, the HTML pages) and
-  ``trusteq_customer_api`` (path ``/v1/customer``, the customer JSON API). Both carry the SAME
-  session: rotating, expiring or revoking it ends both. State-changing requests also need a
-  session-bound CSRF token (see `app.services.customer_session_service`).
-* JSON confirmation ceremony only (`POST /v1/customer/handoffs/{id}/confirm`): the
-  ``X-Dev-Customer-Id`` header (Phase 02 stand-in). It is NOT accepted anywhere else - in
-  particular not by ``request-human``, which needs the session.
+The one customer context, switched off in production (`dev_customer_auth_active`), is a
+SERVER-SIDE session (Phase 03) created by the DEV sign-in form. The server stores only the hash
+of a random secret and decides expiry and revocation itself. The browser receives that secret
+in HttpOnly, SameSite=Strict cookies (Secure on HTTPS), each scoped to one customer prefix
+(Phase 04): ``trusteq_customer_session`` (path ``/customer``, the HTML pages) and
+``trusteq_customer_api`` (path ``/v1/customer``, the customer JSON API). Both carry the SAME
+session: rotating, expiring or revoking it ends both. State-changing requests also need a
+session-bound CSRF token (see `app.services.customer_session_service`). A self-asserted
+``X-Dev-Customer-Id`` header is not a customer context on any route (finding F-1).
 
 Separation from the agent: an agent's bearer token is never a customer credential. A request
 that carries an ``Authorization`` header is refused on every customer route, and customer
 secrets (``tqs_...``) are never accepted on agent routes.
 
-LIMITATION (by design of the simulation): anyone who can complete the dev sign-in or send the
-dev header can claim to be any customer. Preventing exactly that is the job of the real
-identity channel, which is out of scope.
+LIMITATION (by design of the simulation): anyone who can complete the dev sign-in, including an
+untrusted HTTP client that scripts the form, can claim to be any customer. Preventing exactly
+that is the job of the real identity channel, which is out of scope.
 """
 
 import re
@@ -35,7 +32,6 @@ from fastapi import Request
 from app.core.config import Settings
 from app.services.customer_session_service import CustomerSessionService
 
-DEV_CUSTOMER_HEADER = "X-Dev-Customer-Id"
 SESSION_COOKIE = "trusteq_customer_session"
 LOGIN_COOKIE = "trusteq_customer_login"  # pre-session CSRF secret of the sign-in form
 COOKIE_PATH = "/customer"
@@ -50,7 +46,7 @@ _CUSTOMER_ID = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 @dataclass(frozen=True)
 class CustomerContext:
     customer_id: str
-    session_id: str | None = None  # None for the JSON header context
+    session_id: str | None = None
     session_secret: str | None = None  # raw cookie value, only to derive CSRF tokens
     is_dev_context: bool = True  # always True: there is no real customer authentication yet
 
@@ -68,13 +64,6 @@ def agent_credentials_presented(request: Request) -> bool:
     The customer channel never accepts one - not alone, and not next to a customer context.
     """
     return request.headers.get("authorization") is not None
-
-
-def header_customer(settings: Settings, header_value: str | None) -> CustomerContext | None:
-    """The JSON confirmation ceremony's DEV customer context, or None."""
-    if not settings.dev_customer_auth_active or header_value is None:
-        return None
-    return CustomerContext(header_value) if is_valid_customer_id(header_value) else None
 
 
 def session_customer(

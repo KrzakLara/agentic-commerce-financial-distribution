@@ -59,6 +59,7 @@ def bearer(token: str | None) -> dict[str, str]:
 
 
 def customer_headers(customer_id: str) -> dict[str, str]:
+    """The self-asserted DEV header: no route accepts it as a customer since the F-1 fix."""
     return {"X-Dev-Customer-Id": customer_id}
 
 
@@ -91,6 +92,11 @@ def human_csrf(browser: TestClient, application_id: str) -> str:
     """The request-human CSRF token the bank page embeds for this browser's session."""
     secret = api_session_secret(browser)
     return csrf_token(secret, "human", application_id) if secret else ""
+
+
+def confirm_csrf_headers(browser: TestClient, handoff_id: str) -> dict[str, str]:
+    """The confirm CSRF token the bank page embeds for this browser's session and this handoff."""
+    return {"X-CSRF-Token": csrf_token(api_session_secret(browser), "confirm", handoff_id)}
 
 
 def trusted_authorization(app: FastAPI, clock: Callable[[], datetime]) -> AuthorizationService:
@@ -193,13 +199,20 @@ class Flow:
         action_digest: str | None = None,
         client: TestClient | None = None,
     ):  # noqa: ANN201
-        return (client or self.customer_http).post(
+        """The customer JSON ceremony: a signed-in browser with its session's CSRF token."""
+        # A fresh browser unless one is given, with the customer client's error handling (tests of
+        # crashes turn it off); `customer_http` itself may be signed in for another purpose.
+        raises = self.customer_http._transport.raise_server_exceptions  # type: ignore[attr-defined]
+        browser = client or TestClient(self.app, raise_server_exceptions=raises)
+        if not api_session_secret(browser):
+            sign_in_browser(browser, customer_id)
+        return browser.post(
             f"/v1/customer/handoffs/{started.handoff_id}/confirm",
             json={
                 "nonce": nonce or started.nonce,
                 "action_digest": action_digest or started.action_digest,
             },
-            headers=customer_headers(customer_id),
+            headers=confirm_csrf_headers(browser, started.handoff_id),
         )
 
     def provider_callback(

@@ -1,0 +1,14 @@
+{
+  "request": {
+    "contract_version": "v1",
+    "application_id": "app-fixture",
+    "provider_id": "fixture-bank",
+    "product_id": "depot-basic",
+    "channel_id": "direct"
+  },
+  "response": {
+    "contract_version": "v1",
+    "provider_ref": "MOCK-DEPOT-app-fixture",
+    "accepted": true
+  }
+}

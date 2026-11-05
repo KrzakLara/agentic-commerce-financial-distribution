@@ -21,7 +21,7 @@ from app.integrations.catalog_fixture import (
     sign_manifest,
     tampered_copy,
 )
-from tests.flow import INTENT, Flow, customer_headers
+from tests.flow import INTENT, Flow, confirm_csrf_headers, customer_headers
 
 
 def new_catalog_version() -> FixtureProviderDiscovery:
@@ -122,10 +122,11 @@ def test_a_new_handoff_supersedes_the_old_one(flow: Flow) -> None:
     assert old.status_code == 409 and old.json()["error"]["code"] == "handoff_not_active"
     assert flow.status_of(first.application_id) == "AWAITING_AUTHORIZATION"
 
-    ok = flow.customer_http.post(
+    browser = flow.customer_browser("cust-1")
+    ok = browser.post(
         f"/v1/customer/handoffs/{new_id}/confirm",
         json={"nonce": new_nonce, "action_digest": first.action_digest},
-        headers=customer_headers("cust-1"),
+        headers=confirm_csrf_headers(browser, new_id),
     )
     assert ok.status_code == 200
     active = flow.sql(
@@ -388,10 +389,11 @@ def test_a_changed_action_digest_blocks_confirmation(flow: Flow) -> None:
 def test_wrong_or_unknown_challenge_is_rejected_without_revealing_which(flow: Flow) -> None:
     started = flow.start()
     wrong = flow.customer_confirm(started, nonce="A" * 43)
-    unknown = flow.customer_http.post(
+    browser = flow.customer_browser("cust-1")
+    unknown = browser.post(
         "/v1/customer/handoffs/hnd-doesnotexist/confirm",
         json={"nonce": started.nonce, "action_digest": started.action_digest},
-        headers=customer_headers("cust-1"),
+        headers=confirm_csrf_headers(browser, "hnd-doesnotexist"),
     )
     assert wrong.status_code == unknown.status_code == 403
     assert wrong.json()["error"]["code"] == unknown.json()["error"]["code"] == "handoff_invalid"
@@ -469,26 +471,16 @@ def test_confirmation_request_body_is_strict(flow: Flow) -> None:
     started = flow.start()
     url = f"/v1/customer/handoffs/{started.handoff_id}/confirm"
     base = {"nonce": started.nonce, "action_digest": started.action_digest}
-    headers = customer_headers("cust-1")
+    browser = flow.customer_browser("cust-1")
+    headers = confirm_csrf_headers(browser, started.handoff_id)
+    assert browser.post(url, json={**base, "status": "OPENED"}, headers=headers).status_code == 422
     assert (
-        flow.customer_http.post(url, json={**base, "status": "OPENED"}, headers=headers).status_code
+        browser.post(url, json={**base, "customer_id": "cust-9"}, headers=headers).status_code
         == 422
     )
+    assert browser.post(url, json={**base, "nonce": "short"}, headers=headers).status_code == 422
     assert (
-        flow.customer_http.post(
-            url, json={**base, "customer_id": "cust-9"}, headers=headers
-        ).status_code
-        == 422
-    )
-    assert (
-        flow.customer_http.post(url, json={**base, "nonce": "short"}, headers=headers).status_code
-        == 422
-    )
-    assert (
-        flow.customer_http.post(
-            url, json={**base, "action_digest": "XYZ"}, headers=headers
-        ).status_code
-        == 422
+        browser.post(url, json={**base, "action_digest": "XYZ"}, headers=headers).status_code == 422
     )
     assert flow.status_of(started.application_id) == "AWAITING_AUTHORIZATION"
 
