@@ -4,6 +4,9 @@ The gap-closure pass ([phase-07-gap-closure.md](phase-07-gap-closure.md)) built 
 beside the journey. This pass connects them to the real application. That document stays as the record of that pass;
 this one is current where they differ.
 
+**Later work:** the trust integration added a separate profile on top of this:
+[agentic-commerce-integration.md](agentic-commerce-integration.md). It changes the status of the OIDC boundary in the table below.
+
 Everything is a prototype with synthetic data. It opens no real account, creates no legally valid contract and claims no
 regulatory compliance.
 

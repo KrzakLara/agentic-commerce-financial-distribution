@@ -86,6 +86,7 @@ from app.services.policy import (
     evaluate_submit,
     mandate_allows,
 )
+from app.services.trust_gates import TrustGates
 
 # Steps of the mandatory-check pipeline that a crashed process may leave behind.
 _RESUMABLE_CHECK_STATES = frozenset({S.AUTHORIZED, S.KYC_PENDING, S.COMPLIANCE_PENDING})
@@ -167,8 +168,10 @@ class OnboardingService:
         nonce_factory: Callable[[], str] = lambda: secrets.token_urlsafe(32),
         handoff_ttl_seconds: int = 600,
         customer_information_required: bool = False,
+        trust: TrustGates | None = None,
     ) -> None:
         self._information_required = customer_information_required
+        self._trust = trust
         self._uow_factory = uow_factory
         self._apps = applications
         self._catalog = catalog
@@ -584,6 +587,11 @@ class OnboardingService:
                         "channel_kind": offer.channel.kind.value,
                         "partner_id": offer.channel.partner_id,
                         **self._information_evidence(uow, application.application_id),
+                        **(
+                            self._trust.consent_evidence(uow, application, correlation_id)
+                            if self._trust
+                            else {}
+                        ),
                     },
                 )
             )
@@ -597,11 +605,14 @@ class OnboardingService:
         if not self._information_required:
             return PolicyDecision()
         information = uow.customer_information
-        return evaluate_customer_information(
+        decision = evaluate_customer_information(
             application=application,
             tax=information.get_tax(application.application_id),
             assessment=information.get_assessment(application.application_id),
         )
+        if self._trust is None:
+            return decision
+        return PolicyDecision((*decision.missing, *self._trust.confirm_missing(uow, application)))
 
     def _information_evidence(self, uow: UnitOfWork, application_id: str) -> dict[str, Any]:
         """Fixed with the consent, for the audit trail. Statuses and outcome, never a tax value."""
@@ -947,6 +958,10 @@ class OnboardingService:
                 decision = PolicyDecision(("approved_action_current",))
             if decision.allowed:
                 decision = self._customer_information(uow, application)
+            if decision.allowed and self._trust is not None:
+                decision = PolicyDecision(
+                    self._trust.submit_missing(uow, application, correlation_id)
+                )
             if not decision.allowed:
                 # The precise reason is audited; the agent only gets a generic refusal.
                 raise self._deny(
@@ -1001,6 +1016,11 @@ class OnboardingService:
                             "provider_ref": submission.provider_ref,
                             "mock": submission.mock,
                             **submission.audit_details(),
+                            **(
+                                self._trust.submit_evidence(uow, application_id)
+                                if self._trust
+                                else {}
+                            ),
                         },
                     )
                 )

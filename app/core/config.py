@@ -111,6 +111,45 @@ class Settings(BaseSettings):
     oidc_client_secret: SecretStr | None = None
     oidc_redirect_uri: str | None = None
     oidc_jwks_uri: str | None = None
+    # A plain-http, loopback-only OIDC provider for the local integration environment. Refused in
+    # production. Every other issuer must use HTTPS.
+    oidc_allow_insecure_local: bool = False
+
+    # The origin this deployment publishes in discovery metadata and checks DPoP proofs against.
+    # Fixed by configuration, never taken from the request's Host header.
+    public_base_url: str = "http://127.0.0.1:8000"
+    # The provider's own signing key (a private JWK in JSON). Unset outside production: a fresh key
+    # per process. It proves that metadata is unchanged, not who the provider is or what it may do.
+    provider_signing_jwk: SecretStr | None = None
+    # The federation superior named in `authority_hints` (a synthetic authority in this project).
+    trust_superior_entity: str | None = None
+
+    # The nine-area integrated journey: identity proofing, contract signing, attribution and
+    # policy evidence become mandatory gates. Off by default, so the earlier scenarios are
+    # unchanged.
+    full_trust_profile: bool = False
+    delegation_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
+    delegation_request_ttl_seconds: int = Field(default=600, ge=30, le=3600)
+
+    # Vendor-neutral boundaries. Each provider is named by configuration with its pinned public
+    # keys; callbacks signed by anything else are refused.
+    signature_provider_id: str | None = None
+    signature_provider_url: str | None = None
+    signature_provider_jwks: str | None = None
+    signature_provider_api_key: SecretStr | None = None
+    signature_level: Literal["TEST_NO_LEGAL_EFFECT", "QES"] = "TEST_NO_LEGAL_EFFECT"
+    qtsp_id: str | None = None  # a real QTSP on an EU trusted list. None exists for this project.
+    signature_ttl_seconds: int = Field(default=900, ge=60, le=86400)
+
+    proofing_provider_id: str | None = None
+    proofing_provider_url: str | None = None
+    proofing_provider_jwks: str | None = None
+    proofing_provider_api_key: SecretStr | None = None
+    proofing_provider_regulated: bool = False  # True needs a contract no prototype can have
+    proofing_ttl_seconds: int = Field(default=900, ge=60, le=86400)
+
+    # {"partner_id": {"keys": [...]}}: the public keys of the partners' referral proofs (synthetic).
+    partner_referral_jwks: str | None = None
 
     allowed_origins: Annotated[list[str], Field(max_length=20)] = [
         "http://localhost:3000",
@@ -133,6 +172,18 @@ class Settings(BaseSettings):
         "oidc_client_secret",
         "oidc_redirect_uri",
         "oidc_jwks_uri",
+        "provider_signing_jwk",
+        "trust_superior_entity",
+        "signature_provider_id",
+        "signature_provider_url",
+        "signature_provider_jwks",
+        "signature_provider_api_key",
+        "qtsp_id",
+        "proofing_provider_id",
+        "proofing_provider_url",
+        "proofing_provider_jwks",
+        "proofing_provider_api_key",
+        "partner_referral_jwks",
         mode="before",
     )
     @classmethod
@@ -160,6 +211,15 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "the mock depot-provider callback must not be enabled in production"
                 )
+            if self.oidc_allow_insecure_local:
+                raise ValueError("oidc_allow_insecure_local must not be set in production")
+            if self.provider_signing_jwk is None and self.full_trust_profile:
+                raise ValueError("full_trust_profile in production needs provider_signing_jwk")
+        if self.signature_level == "QES" and self.qtsp_id is None:
+            raise ValueError("a qualified signature needs a real, named QTSP")
+        if self.proofing_provider_regulated and self.environment is not Environment.PRODUCTION:
+            raise ValueError("regulated identity proofing cannot be claimed outside production")
+        self.public_base_url = self.public_base_url.rstrip("/")
         if self.ai_execution_mode is AIExecutionMode.LLM:
             if not self.enable_llm:
                 raise ValueError("ai_execution_mode=llm requires enable_llm=true")
@@ -179,6 +239,25 @@ class Settings(BaseSettings):
             and self.environment is not Environment.PRODUCTION
             and self.customer_identity_mode == "dev_simulated"
         )
+
+    @property
+    def oidc_login_active(self) -> bool:
+        """A real authorization-code login, only with a complete provider configuration."""
+        return self.customer_identity_mode == "oidc" and all(
+            value is not None
+            for value in (
+                self.oidc_issuer,
+                self.oidc_client_id,
+                self.oidc_client_secret,
+                self.oidc_redirect_uri,
+                self.oidc_jwks_uri,
+            )
+        )
+
+    @property
+    def customer_sign_in_active(self) -> bool:
+        """Some sign-in exists. `oidc` without a provider has none: customer pages fail closed."""
+        return self.dev_customer_auth_active or self.oidc_login_active
 
     @property
     def dev_operator_cli_active(self) -> bool:

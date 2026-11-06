@@ -48,7 +48,7 @@ class CustomerContext:
     customer_id: str
     session_id: str | None = None
     session_secret: str | None = None  # raw cookie value, only to derive CSRF tokens
-    is_dev_context: bool = True  # always True: there is no real customer authentication yet
+    is_dev_context: bool = True  # False only behind a verified OIDC login (still not proofing)
 
     def __repr__(self) -> str:
         return f"CustomerContext(customer_id={self.customer_id!r}, session_id={self.session_id!r})"
@@ -73,13 +73,15 @@ def session_customer(
     cookie: str = SESSION_COOKIE,
 ) -> CustomerContext | None:
     """The signed-in customer (ACTIVE server-side session behind `cookie`), or None."""
-    if not settings.dev_customer_auth_active:
+    if not settings.customer_sign_in_active:
         return None
     secret = request.cookies.get(cookie)
     session = sessions.resolve(secret)
     if session is None:
         return None
-    return CustomerContext(session.customer_id, session.session_id, secret)
+    return CustomerContext(
+        session.customer_id, session.session_id, secret, settings.dev_customer_auth_active
+    )
 
 
 def cookie_is_secure(request: Request) -> bool:

@@ -22,7 +22,12 @@ from uuid import UUID
 from fastapi import APIRouter, Header, Path, Request, Response, status
 
 from app.api.auth import CanCreateDraft, CanReadStatus, CanRequestHandoff, CanSubmit
-from app.api.deps import ApplicationServiceDep, CorrelationIdDep, OnboardingServiceDep
+from app.api.deps import (
+    ApplicationServiceDep,
+    CorrelationIdDep,
+    DelegationServiceDep,
+    OnboardingServiceDep,
+)
 from app.api.schemas.applications import (
     ApplicationAuthorizationView,
     ApplicationCreatedResponse,
@@ -88,9 +93,17 @@ def create_application(
     response: Response,
     principal: CanCreateDraft,
     service: ApplicationServiceDep,
+    delegation: DelegationServiceDep,
     correlation_id: CorrelationIdDep,
     idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
 ) -> ApplicationCreatedResponse:
+    delegation.enforce_action(
+        principal,
+        provider_id=body.provider_id,
+        product_id=body.product_id,
+        channel_id=body.channel_id,
+        correlation_id=correlation_id,
+    )
     result = service.create_application(
         principal=principal,
         command=body.to_command(),
@@ -98,6 +111,14 @@ def create_application(
         correlation_id=correlation_id,
     )
     _no_store(response)  # the body may carry credentials
+    if result.credentials is not None:
+        delegation.link_application_grants(
+            bootstrap_mandate_id=principal.mandate_id,
+            mandate_ids=(
+                result.credentials.onboarding.mandate_id,
+                result.credentials.status.mandate_id,
+            ),
+        )
     if result.replayed:
         response.status_code = status.HTTP_200_OK
         response.headers["Idempotent-Replayed"] = "true"

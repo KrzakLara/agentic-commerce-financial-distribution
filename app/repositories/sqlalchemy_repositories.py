@@ -207,6 +207,7 @@ class SqlAlchemyUnitOfWork:
         self.attributions = SqlAlchemyChannelAttributionRepository(self._session)
         self.depot_submissions = SqlAlchemyDepotSubmissionRepository(self._session)
         self.customer_information = SqlAlchemyCustomerInformationRepository(self._session)
+        self.trust = self._session  # the trust services work on their own rows in this transaction
         return self
 
     def __exit__(

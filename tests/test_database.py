@@ -47,6 +47,12 @@ def test_init_database_creates_the_full_schema_and_is_idempotent(tmp_path: Path)
         "review_cases", "channel_attributions",
         # Final integration
         "tax_information", "appropriateness_assessments",
+        # Trust integration
+        "registered_agents", "delegations", "delegated_mandates", "used_jtis",
+        "oidc_login_states", "identity_bindings", "authentication_events",
+        "identity_proofing_cases", "contract_packages", "signature_sessions",
+        "partner_relationships", "attribution_claims", "attribution_decisions",
+        "policy_decisions", "a2a_tasks",
     }  # fmt: skip
     assert set(Base.metadata.tables) == tables
     with engine.connect() as connection:

@@ -32,6 +32,7 @@ from app.services.appropriateness import (
     assess,
     knowledge_level_for,
 )
+from app.services.identity_proofing import latest_case
 from app.services.onboarding_service import OnboardingService
 from app.services.policy import evaluate_customer_information
 from app.services.tax_information import (
@@ -60,6 +61,12 @@ class CustomerInformationService:
         self._apps = applications
         self._onboarding = onboarding
         self._clock = clock
+
+    def proofing_status(self, application_id: str) -> str | None:
+        """The latest identity-proofing status, for the review page of the full-trust profile."""
+        with self._uow_factory() as uow:
+            case = latest_case(uow, application_id)
+            return case.status if case else None
 
     def status(self, application: DepotApplication) -> InformationStatus:
         """For a page or an answer the caller is already authorized to see."""

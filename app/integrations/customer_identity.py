@@ -1,13 +1,14 @@
-"""The boundary a real customer identity provider would plug into. NOT a working OIDC login.
+"""The checks a customer identity provider's tokens must pass.
 
-Status: BLOCKED BY EXTERNAL PROVIDER. This project has no test identity provider and no client
-registration, so nothing here has ever talked to one. `customer_identity_mode=oidc` therefore
-switches the DEV sign-in off and every customer page fails closed. No signature is verified here:
-without a provider's keys that would be a fake, and an unverified token is never accepted.
+Status: LOCAL VERIFIED against a separate local OIDC provider, and ADAPTER READY for a real one. No
+external sandbox or bank identity provider is configured for this project.
+`customer_identity_mode=oidc` switches the DEV sign-in off. Without a complete provider
+configuration
+every customer page fails closed, and `NoIdentityProviderConfigured` refuses every token.
 
-What this module does give a later integration, with tests: the configuration check, PKCE, state and
-nonce generation, and the deterministic checks of an ID token's claims. These run only after a
-`IdTokenVerifier` has verified the signature with the provider's trusted keys.
+This module gives the login in `app.services.oidc_login`: the configuration check, PKCE, state and
+nonce generation, and the deterministic checks of an ID token's claims. These run only after an
+`IdTokenVerifier` has verified the signature with the provider's published keys.
 
 An OIDC login at a test provider would prove authentication at that provider. It would not be German
 eID identification, regulated KYC or bank-grade identity assurance.
@@ -22,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from app.core.config import Settings
+from app.integrations.jose_tools import SignatureRejected, verify_jwt
 
 _REQUIRED_SETTINGS = (
     "oidc_issuer",
@@ -68,6 +70,20 @@ class NoIdentityProviderConfigured:
 
     def verify_signature(self, raw_token: str) -> Mapping[str, Any]:  # noqa: ARG002
         raise IdentityRejected("no_identity_provider_configured")
+
+
+class JwksIdTokenVerifier:
+    """Verifies an ID token's signature with the provider's published keys, using `joserfc`."""
+
+    def __init__(self, jwks: Mapping[str, Any]) -> None:
+        self._jwks = jwks
+
+    def verify_signature(self, raw_token: str) -> Mapping[str, Any]:
+        try:
+            _, claims = verify_jwt(raw_token, self._jwks, typ=None)
+        except SignatureRejected:
+            raise IdentityRejected("bad_signature") from None
+        return claims
 
 
 def missing_oidc_settings(settings: Settings) -> list[str]:

@@ -1,5 +1,8 @@
 # TRUSTEQ - evidence summary
 
+**This page records the state of commit `20b4a30`.** Later results, including the trust integration, are in
+[integration-evidence.md](../integration-evidence.md).
+
 What was measured, on which code, and what it does not show. Use this page for slide numbers and for questions.
 
 Everything is a prototype with synthetic data. It opens no real account, creates no legally valid contract and claims no

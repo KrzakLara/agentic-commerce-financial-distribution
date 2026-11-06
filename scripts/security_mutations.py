@@ -32,12 +32,23 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-COPY_ITEMS = ("app", "tests", "scripts", "docs", "pyproject.toml", ".gitignore", ".env.example")
+COPY_ITEMS = (
+    "app",
+    "external_agent",
+    "local_services",
+    "tests",
+    "scripts",
+    "docs",
+    "pyproject.toml",
+    ".gitignore",
+    ".env.example",
+)
 PYTEST = [
     "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider",
     "--deselect", "tests/test_demo_script.py",
     "--deselect", "tests/test_demo_scripts_phase04.py",
     "--deselect", "tests/test_demo_integrated.py",
+    "--deselect", "tests/test_trust_journey.py",
 ]  # fmt: skip
 
 
@@ -57,6 +68,11 @@ DB = "app/repositories/database.py"
 ORM = "app/repositories/orm.py"
 REVIEW = "app/services/review_service.py"
 CATALOG = "app/integrations/catalog_fixture.py"
+
+
+DELEGATION = "app/services/delegation_service.py"
+CONTRACT = "app/services/contract_execution.py"
+PROOFING = "app/services/identity_proofing.py"
 
 
 def m(key: str, control: str, path: str, *edits: tuple[str, str]) -> Mutant:
@@ -317,6 +333,67 @@ MUTANTS = [
        "if claim.source is not None")),
     m("M71", "oidc mode leaves the DEV sign-in active", "app/core/config.py",
       ('            and self.customer_identity_mode == "dev_simulated"\n', "")),
+    # --- trust integration: delegation, identity, contract, attribution, communication --------
+    m("M72", "a delegated token also works as a plain bearer token", DELEGATION,
+      ('            elif scheme != "dpop":\n                reason = "dpop_downgrade"\n', "")),
+    m("M73", "a DPoP proof from any key is accepted", DELEGATION,
+      ("                    if thumbprint != row.dpop_jkt:\n", "                    if False:\n")),
+    m("M74", "a revoked delegation keeps working", DELEGATION,
+      ('if row is None or row.status != "ISSUED" or row.revoked_at is not None:',
+       "if row is None:")),
+    m("M75", "an expired delegation keeps working", DELEGATION,
+      ("            elif row.expires_at is None or now >= row.expires_at:\n",
+       "            elif False:\n")),
+    m("M76", "a token keeps scopes the customer did not approve", DELEGATION,
+      ("return replace(principal, scopes=principal.scopes & scopes)", "return principal")),
+    m("M77", "a delegated draft may use another channel than approved", DELEGATION,
+      ('                and details.get("channel_id") == channel_id\n', "")),
+    m("M78", "an agent may ask for scopes outside its registration", DELEGATION,
+      ("                    or not scopes <= frozenset(client.allowed_scopes)\n", "")),
+    m("M79", "a DPoP proof can be replayed", DELEGATION,
+      ('        if not consume_jti(uow, "dpop", jti, until):\n'
+       '            raise SignatureRejected("dpop_replayed")\n', "")),
+    m("M80", "a submission needs no signature", CONTRACT,
+      ("    if session is None or session.state != STATE_SIGNED:\n"
+       '        return ("contract_signature",)\n', "")),
+    m("M81", "a signed callback may name another document", CONTRACT,
+      ('        if claims.get("package_hash") != row.package_hash:\n', "        if False:\n")),
+    m("M82", "a signed callback may name another signatory", CONTRACT,
+      ('        if claims.get("signer_ref") != row.signer_ref:\n', "        if False:\n")),
+    m("M83", "a test signer may claim another signature level", CONTRACT,
+      ('        if claims.get("level") != row.level:\n', "        if False:\n")),
+    m("M84", "a customer may confirm without identity proofing", "app/services/trust_gates.py",
+      ("        if proofing_satisfied(uow, application, self._clock()):\n", "        if True:\n")),
+    m("M85", "a proofing provider may claim regulatory evidence", PROOFING,
+      ('                elif claims.get("regulatory_evidence") is not False:\n',
+       "                elif False:\n")),
+    m("M86", "a DEV session may start identity proofing", PROOFING,
+      ("            if not session_was_authenticated(uow, session_id, customer_id):\n",
+       "            if False:\n")),
+    m("M87", "a login callback works in another browser", "app/services/oidc_login.py",
+      ("            if row.browser_binding_hash != _hash(browser_binding):\n",
+       "            if False:\n")),
+    m("M88", "a login may silently switch the signed-in account", "app/services/oidc_login.py",
+      ("        if signed_in_customer is not None and signed_in_customer != customer_ref:\n",
+       "        if False:\n")),
+    m("M89", "competing partners are resolved without a person",
+      "app/services/distribution_governance.py",
+      ("    if len(partners) > 1:\n", "    if False:\n")),
+    m("M90", "a forged referral counts", "app/services/distribution_governance.py",
+      ('            return partner_id, "REJECTED", "forged_referral", None\n',
+       '            claims = {"iss": partner_id, "aud": self._audience, "exp": 2**40,\n'
+       '                      "product_id": application.product_id, "jti": "forged",\n'
+       '                      "terms_version": "sample-2026.11"}\n')),
+    m("M91", "a wrong amount in a model's text is released",
+      "app/services/regulated_communication.py",
+      ("            if amount not in facts.amounts:\n", "            if False:\n")),
+    m("M92", "the agent accepts a key its trust anchor did not name", "external_agent/trust.py",
+      ("_verify_statement(leaf_token, authorized, issuer=entity_id, subject=entity_id, now=now)",
+       '_verify_statement(leaf_token, leaf_unverified.get("jwks"), issuer=entity_id, '
+       "subject=entity_id, now=now)")),
+    m("M93", "a card may send the agent to another origin", "external_agent/client.py",
+      ('            if urlsplit(interface["url"]).netloc != expected:\n',
+       "            if False:\n")),
 ]  # fmt: skip
 
 
@@ -331,7 +408,7 @@ def make_copy() -> Path:
     return workdir
 
 
-def run(cmd: list[str], cwd: Path, timeout: int = 600) -> subprocess.CompletedProcess[str]:
+def run(cmd: list[str], cwd: Path, timeout: int = 900) -> subprocess.CompletedProcess[str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("TRUSTEQ_")}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     return subprocess.run(  # noqa: S603 - fixed argument list, no shell
@@ -369,7 +446,7 @@ def apply(workdir: Path, mutant: Mutant) -> str | None:
     return None
 
 
-def verify_baseline() -> str | None:
+def verify_baseline(command: list[str]) -> str | None:
     """None if an unmodified copy imports itself and passes; else the reason to abort."""
     copy = make_copy()
     try:
@@ -379,7 +456,7 @@ def verify_baseline() -> str | None:
         if not probe.stdout.strip().startswith(str(copy.resolve())):
             return f"the copy imports the wrong app package: {probe.stdout.strip()}"
         started = time.perf_counter()
-        clean = run(PYTEST, copy)
+        clean = run(command, copy)
         if clean.returncode != 0:
             return "the unmodified copy does not pass:\n" + clean.stdout[-2000:]
         passed = re.search(r"(\d+) passed", clean.stdout)
@@ -396,13 +473,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--list", action="store_true", help="only list the mutants")
     parser.add_argument("--only", default="", help="comma-separated mutant keys")
+    parser.add_argument(
+        "--tests",
+        default="",
+        help="comma-separated test paths instead of the whole suite: a targeted, faster run",
+    )
     args = parser.parse_args()
+    command = PYTEST + [path for path in args.tests.split(",") if path]
     selected = [mu for mu in MUTANTS if not args.only or mu.key in args.only.split(",")]
     if args.list:
         for mu in selected:
             print(f"{mu.key}  {mu.control}  ({mu.path})")
         return 0
-    problem = verify_baseline()
+    problem = verify_baseline(command)
     if problem:
         print(f"ABORT: {problem}")
         return 2
@@ -416,7 +499,7 @@ def main() -> int:
                 print(f"{mutant.key}  NOT APPLIED  {mutant.control}: {problem}")
                 continue
             started = time.perf_counter()
-            result = run(PYTEST, workdir)
+            result = run(command, workdir)
             seconds = time.perf_counter() - started
             if result.returncode != 0:
                 killed += 1

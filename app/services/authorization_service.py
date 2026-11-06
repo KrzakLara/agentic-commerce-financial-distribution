@@ -274,6 +274,31 @@ class AuthorizationService:
             uow.commit()
         return issued
 
+    def issue_delegated_bootstrap(
+        self,
+        uow: UnitOfWork,
+        *,
+        agent_actor_id: str,
+        customer_id: str,
+        lifetime: timedelta,
+        now: datetime,
+    ) -> tuple[Mandate, IssuedToken]:
+        """The starting grant of a customer's delegation, in the caller's transaction.
+
+        Not the DEV bootstrap: this one exists only because an authenticated customer approved a
+        specific request. It has the same narrow scope, so it can create one draft.
+        """
+        grant = self._grant(
+            MandateKind.BOOTSTRAP,
+            agent_actor_id=agent_actor_id,
+            customer_id=customer_id,
+            application_id=None,
+            now=now,
+            lifetime=lifetime,
+        )
+        uow.mandates.add(grant)
+        return grant, self._add_token(uow, grant, BOOTSTRAP_SCOPES, now)
+
     # --- 2. grants issued by the bank together with a new application -------------------------
 
     def grant_application_access(

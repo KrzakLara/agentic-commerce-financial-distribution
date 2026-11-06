@@ -36,7 +36,7 @@ def test_a_v4_database_gains_the_new_tables_and_keeps_its_data(flow: Flow, db_ur
     upgrade(db)  # idempotent
 
     with sqlite3.connect(db) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 5
+        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 6
         names = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert names >= NEW_TABLES
         for table in NEW_TABLES:

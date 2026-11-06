@@ -19,6 +19,7 @@ header is refused (and audited), whatever else it carries. Possessing the handof
 nonce) is never authentication: the page shows nothing until the customer is signed in.
 """
 
+import base64
 import re
 from collections.abc import Mapping
 from typing import Annotated
@@ -28,7 +29,7 @@ from fastapi import APIRouter, Header, Path, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from app.api import pages
+from app.api import pages, trust_pages
 from app.api.customer_auth import (
     API_SESSION_COOKIE,
     COOKIE_PATH,
@@ -82,6 +83,7 @@ from app.services.customer_session_service import (
     is_pre_session_secret,
     new_pre_session_secret,
 )
+from app.services.identity_proofing import STATUS_VERIFIED
 from app.services.onboarding_service import OnboardingService
 from app.services.review_service import ReviewService
 
@@ -98,6 +100,7 @@ CSRF_LOGIN = "login"
 CSRF_HUMAN = "human"  # bound to (session, application)
 CSRF_TAX = "tax"  # bound to (session, handoff)
 CSRF_ASSESSMENT = "assessment"  # bound to (session, handoff)
+CSRF_PROOFING = "proofing"  # bound to (session, handoff)
 
 
 def _presented_agent_id(request: Request, authorization: AuthorizationService) -> str | None:
@@ -548,7 +551,10 @@ def _sign_in_response(
 
 
 @router.get(
-    "/customer/handoffs/{handoff_id}", include_in_schema=False, name="customer_handoff_page"
+    "/customer/handoffs/{handoff_id}",
+    include_in_schema=False,
+    name="customer_handoff_page",
+    response_model=None,
 )
 def handoff_page(
     handoff_id: HandoffId,
@@ -561,16 +567,24 @@ def handoff_page(
     information: CustomerInformationServiceDep,
     correlation_id: CorrelationIdDep,
     token: str = "",
-) -> HTMLResponse:
+) -> HTMLResponse | RedirectResponse:
     if not _TOKEN.fullmatch(token):
         return _page("Invalid link", "This confirmation link is not valid.", 403)
-    if not settings.dev_customer_auth_active:
+    if not settings.customer_sign_in_active:
         return _page("Sign-in unavailable", "Customer sign-in is not available.", 401)
     if agent_credentials_presented(request):
         _refuse_agent_credentials(request, handoff_id, service, authorization, correlation_id)
         return _page("Not allowed", "Agent credentials are not accepted here.", 401)
     customer = session_customer(request, settings, sessions)
     if customer is None or customer.session_secret is None:
+        if settings.oidc_login_active:  # the link alone shows nothing here either
+            target = base64.urlsafe_b64encode(
+                f"/customer/handoffs/{handoff_id}?token={token}".encode()
+            )
+            return RedirectResponse(
+                f"/customer/oidc/login?next={target.decode().rstrip('=')}",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
         return _sign_in_response(request, handoff_id, token)  # the link alone shows nothing
     try:
         return _review_response(
@@ -613,6 +627,14 @@ def _review_response(
         if c.channel_id == action.channel_id
     )
     panel = None
+    trust_card = ""
+    proofed = True
+    if settings.full_trust_profile:
+        proofing = information.proofing_status(action.application_id)
+        proofed = proofing == STATUS_VERIFIED
+        trust_card = trust_pages.identity_card(
+            proofing, handoff_id, token, csrf_token(secret, CSRF_PROOFING, handoff_id)
+        )
     if settings.customer_information_required:
         current = information.status(review.application)
         panel = pages.InformationPanel(
@@ -622,7 +644,7 @@ def _review_response(
             assessment_csrf=csrf_token(secret, CSRF_ASSESSMENT, handoff_id),
             tax_record=current.tax,
             assessment=current.assessment,
-            ready=current.ready,
+            ready=current.ready and proofed,
             tax_statuses=tax_statuses,
         )
     return pages.html_response(
@@ -638,6 +660,7 @@ def _review_response(
             channel=channel,
             human_csrf_token=csrf_token(secret, CSRF_HUMAN, action.application_id),
             information=panel,
+            trust_card=trust_card,
         ),
         status_code,
     )
@@ -750,6 +773,9 @@ async def confirm_handoff_form(
             csrf_token(customer.session_secret, CSRF_HUMAN, application.application_id),
         ),
         step=pages.STEP_CONFIRMED,
+        extra_html=trust_pages.contract_link_html(application.application_id)
+        if settings.full_trust_profile
+        else "",
     )
     return pages.html_response(page, 200)
 

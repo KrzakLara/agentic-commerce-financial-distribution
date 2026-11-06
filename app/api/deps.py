@@ -5,13 +5,21 @@ from fastapi import Depends, Request
 
 from app.container import AppContainer
 from app.core.config import Settings
+from app.integrations.remote_providers import RemoteProofingProvider, RemoteSigningProvider
 from app.repositories.sqlalchemy_repositories import SqlAlchemyUnitOfWork
 from app.services.application_service import ApplicationService
 from app.services.authorization_service import AuthorizationService
+from app.services.contract_execution import ContractExecutionService
 from app.services.customer_information_service import CustomerInformationService
 from app.services.customer_session_service import CustomerSessionService
+from app.services.delegation_service import DelegationService
+from app.services.distribution_governance import DistributionGovernanceService
+from app.services.identity_proofing import IdentityProofingService
+from app.services.oidc_login import OidcLoginService
 from app.services.onboarding_service import OnboardingService
+from app.services.regulated_communication import CommunicationGuard
 from app.services.review_service import ReviewService
+from app.services.trust_gates import TrustGates
 
 
 def get_app_settings(request: Request) -> Settings:
@@ -67,11 +75,32 @@ def get_application_service(
 ApplicationServiceDep = Annotated[ApplicationService, Depends(get_application_service)]
 
 
+def get_governance_service(
+    request: Request,
+    settings: SettingsDep,
+    container: ContainerDep,
+    applications: ApplicationServiceDep,
+) -> DistributionGovernanceService:
+    session_factory = request.app.state.session_factory
+    return DistributionGovernanceService(
+        lambda: SqlAlchemyUnitOfWork(session_factory),
+        applications,
+        container.catalog,
+        referral_jwks=settings.partner_referral_jwks,
+        audience=settings.public_base_url,
+        clock=container.clock,
+    )
+
+
+GovernanceServiceDep = Annotated[DistributionGovernanceService, Depends(get_governance_service)]
+
+
 def get_onboarding_service(
     request: Request,
     settings: SettingsDep,
     container: ContainerDep,
     applications: ApplicationServiceDep,
+    governance: GovernanceServiceDep,
 ) -> OnboardingService:
     session_factory = request.app.state.session_factory
     return OnboardingService(
@@ -85,6 +114,9 @@ def get_onboarding_service(
         clock=container.clock,
         handoff_ttl_seconds=settings.handoff_ttl_seconds,
         customer_information_required=settings.customer_information_required,
+        trust=TrustGates(applications, governance, clock=container.clock)
+        if settings.full_trust_profile
+        else None,
     )
 
 
@@ -141,6 +173,115 @@ def get_customer_session_service(
 
 
 CustomerSessionServiceDep = Annotated[CustomerSessionService, Depends(get_customer_session_service)]
+
+
+def get_delegation_service(
+    request: Request,
+    settings: SettingsDep,
+    container: ContainerDep,
+    authorization: AuthorizationServiceDep,
+) -> DelegationService:
+    session_factory = request.app.state.session_factory
+    return DelegationService(
+        lambda: SqlAlchemyUnitOfWork(session_factory),
+        authorization=authorization,
+        catalog=container.catalog,
+        public_base_url=settings.public_base_url,
+        delegation_ttl_seconds=settings.delegation_ttl_seconds,
+        request_ttl_seconds=settings.delegation_request_ttl_seconds,
+        bootstrap_ttl_seconds=settings.agent_bootstrap_ttl_seconds,
+        clock=container.clock,
+    )
+
+
+DelegationServiceDep = Annotated[DelegationService, Depends(get_delegation_service)]
+
+
+def get_oidc_login_service(
+    request: Request, settings: SettingsDep, container: ContainerDep
+) -> OidcLoginService:
+    session_factory = request.app.state.session_factory
+    return OidcLoginService(
+        lambda: SqlAlchemyUnitOfWork(session_factory),
+        settings,
+        container.outbound_http,
+        clock=container.clock,
+    )
+
+
+OidcLoginServiceDep = Annotated[OidcLoginService, Depends(get_oidc_login_service)]
+
+
+def get_proofing_service(
+    request: Request,
+    settings: SettingsDep,
+    container: ContainerDep,
+    applications: ApplicationServiceDep,
+) -> IdentityProofingService:
+    session_factory = request.app.state.session_factory
+    provider = (
+        RemoteProofingProvider(
+            settings.proofing_provider_url,
+            settings.proofing_provider_api_key,
+            container.outbound_http,
+            allow_insecure_local=settings.oidc_allow_insecure_local,
+        )
+        if settings.proofing_provider_url
+        else None
+    )
+    return IdentityProofingService(
+        lambda: SqlAlchemyUnitOfWork(session_factory),
+        applications,
+        provider=provider,
+        provider_id=settings.proofing_provider_id,
+        provider_jwks=settings.proofing_provider_jwks,
+        audience=settings.public_base_url,
+        ttl_seconds=settings.proofing_ttl_seconds,
+        clock=container.clock,
+    )
+
+
+ProofingServiceDep = Annotated[IdentityProofingService, Depends(get_proofing_service)]
+
+
+def get_contract_service(
+    request: Request,
+    settings: SettingsDep,
+    container: ContainerDep,
+    applications: ApplicationServiceDep,
+) -> ContractExecutionService:
+    session_factory = request.app.state.session_factory
+    provider = (
+        RemoteSigningProvider(
+            settings.signature_provider_url,
+            settings.signature_provider_api_key,
+            container.outbound_http,
+            allow_insecure_local=settings.oidc_allow_insecure_local,
+        )
+        if settings.signature_provider_url
+        else None
+    )
+    return ContractExecutionService(
+        lambda: SqlAlchemyUnitOfWork(session_factory),
+        applications,
+        provider=provider,
+        provider_id=settings.signature_provider_id,
+        provider_jwks=settings.signature_provider_jwks,
+        audience=settings.public_base_url,
+        level=settings.signature_level,
+        ttl_seconds=settings.signature_ttl_seconds,
+        clock=container.clock,
+    )
+
+
+ContractServiceDep = Annotated[ContractExecutionService, Depends(get_contract_service)]
+
+
+def get_communication_guard(container: ContainerDep) -> CommunicationGuard:
+    return CommunicationGuard(container.catalog, container.clock)
+
+
+CommunicationGuardDep = Annotated[CommunicationGuard, Depends(get_communication_guard)]
 
 
 def get_correlation_id(request: Request) -> str:

@@ -16,13 +16,20 @@ docs/trust-boundaries.md for the production target.
 from collections.abc import Callable
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.api.deps import AuthorizationServiceDep, CorrelationIdDep
+from app.api.deps import (
+    AuthorizationServiceDep,
+    CorrelationIdDep,
+    DelegationServiceDep,
+    SettingsDep,
+)
+from app.core.config import Settings
 from app.domain.enums import MandateScope
 from app.domain.mandate import AGENT_API_AUDIENCE
-from app.services.authorization_service import AgentPrincipal
+from app.services.authorization_service import AgentPrincipal, AuthorizationService
+from app.services.delegation_service import DelegationService
 
 _bearer = HTTPBearer(
     auto_error=False,  # missing/other schemes are answered by our own fail-closed 401
@@ -36,15 +43,46 @@ _bearer = HTTPBearer(
 )
 
 
+def authenticate_request(
+    request: Request,
+    settings: Settings,
+    authorization: AuthorizationService,
+    delegation: DelegationService,
+    correlation_id: str,
+) -> AgentPrincipal:
+    """Verify the token, then bind the request to the customer's delegation if it stands on one.
+
+    A delegated token needs `Authorization: DPoP` and a proof of the delegation's key (RFC 9449),
+    and
+    never works as a plain bearer token. Other tokens stay plain bearer tokens.
+    """
+    scheme, _, raw = (request.headers.get("authorization") or "").partition(" ")
+    scheme, raw = scheme.lower(), raw.strip()
+    principal = authorization.authenticate(
+        raw if scheme in {"bearer", "dpop"} and raw else None,
+        audience=AGENT_API_AUDIENCE,
+        correlation_id=correlation_id,
+    )
+    return delegation.check_request(
+        principal,
+        scheme=scheme,
+        raw_token=raw,
+        proof=request.headers.get("dpop"),
+        method=request.method,
+        url=f"{settings.public_base_url}{request.url.path}",
+        correlation_id=correlation_id,
+    )
+
+
 def get_current_agent(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    request: Request,
+    _credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    settings: SettingsDep,
     authorization: AuthorizationServiceDep,
+    delegation: DelegationServiceDep,
     correlation_id: CorrelationIdDep,
 ) -> AgentPrincipal:
-    raw = credentials.credentials if credentials is not None else None
-    return authorization.authenticate(
-        raw, audience=AGENT_API_AUDIENCE, correlation_id=correlation_id
-    )
+    return authenticate_request(request, settings, authorization, delegation, correlation_id)
 
 
 CurrentAgent = Annotated[AgentPrincipal, Depends(get_current_agent)]

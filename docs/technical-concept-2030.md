@@ -10,7 +10,9 @@ assumptions by the author**, not verified facts and not a quotation. Legal refer
 applicability view, not legal advice: a client-specific legal and compliance review is mandatory, and the
 applicable versions of each text must be checked at implementation time.
 
-The current state of the code is in [final-integration.md](final-integration.md).
+The current state of the code is in [final-integration.md](final-integration.md) and, for the nine trust areas,
+[agentic-commerce-integration.md](agentic-commerce-integration.md), with exact classifications. In the tables below, "2026
+prototype" means built and tested locally with synthetic parties. Nothing is live or connected to a real sandbox.
 
 ## 1. The problem in one paragraph
 
@@ -87,20 +89,20 @@ flowchart LR
 | Component | Responsibility | Why this way | 2026 prototype | 2030 target |
 |---|---|---|---|---|
 | Personal AI agents | Research, prepare, coordinate, report status | Third-party and untrusted by design: the bank cannot certify or control them | Scripted agent; optional LLM agent behind a flag | Any agent that meets the published API and delegation contract |
-| Provider discovery | Machine-readable catalog of who offers what | Agents must find the provider without a website visit | Fixture catalog, public REST routes | Published signed manifest; MCP or A2A as thin adapters over REST |
-| Verifiable provider identity | Prove the endpoint belongs to the named legal entity | A register entry alone does not authenticate an endpoint (ADR section 09) | HMAC-signed manifest, pinned digest, allow-listed register | Institution-approved trust anchors, rotation, revocation, registry checks |
+| Provider discovery | Machine-readable catalog of who offers what | Agents must find the provider without a website visit | A2A 1.0 Agent Card and JSON-RPC subset, signed catalog, a separate client process; local only | A public HTTPS deployment; MCP or A2A as thin adapters over REST |
+| Verifiable provider identity | Prove the endpoint belongs to the named legal entity | A register entry alone does not authenticate an endpoint (ADR section 09) | ES256 entity statements with a synthetic authority: rotation and revocation tested. HMAC manifest remains inside the bank. Regulatory status always unknown | Institution-approved trust anchors, a conformance-tested federation library, registry checks |
 | Bank API gateway and policy engine | Authenticate, validate, rate-limit, then decide deterministically | An LLM cannot be tested as an authorizer and is open to prompt injection | Validation and policy gate in one process; no rate limits | Dedicated gateway; policy as versioned, reviewed rules |
-| Scoped authorization and delegation | What the agent may do, for whom, how long | The agent's identity is not the customer's identity | Opaque scoped tokens, resource binding, revocation | OAuth 2.0 with FAPI 2.0, PAR, RAR, DPoP or mTLS where justified |
-| Customer authentication | Prove who the customer is, independent of the agent | Critical threat is session substitution (ADR section 03) | **DEV simulation.** OIDC boundary fails closed, no provider | Bank SCA, eID or EUDI wallet in the bank's channel |
+| Scoped authorization and delegation | What the agent may do, for whom, how long | The agent's identity is not the customer's identity | A local delegation protocol: registered agents, customer approval, DPoP-bound opaque tokens, revocation. Not FAPI | OAuth 2.0 with FAPI 2.0, PAR, RAR, DPoP or mTLS where justified |
+| Customer authentication | Prove who the customer is, independent of the agent | Critical threat is session substitution (ADR section 03) | OIDC code flow with PKCE against a separate local provider; DEV simulation for older scenarios. **No real provider.** Synthetic proofing boundary | Bank SCA, eID or EUDI wallet in the bank's channel |
 | KYC and AML providers | Identify, screen, monitor | Regulated duty of the obligated entity | Mock, `mock=true` stored | Contracted providers; reliance only under the statutory conditions (GwG section 17) |
 | Tax-information collection | Collect and validate tax declarations | Part of today's onboarding | Customer page, local format check, identifier discarded | Encrypted storage and retention; IdNr check and reporting as legally required |
 | Appropriateness | Knowledge and experience before relevant orders | Duty depends on service and instrument; never an LLM decision | Synthetic questionnaire, deterministic rules, customer acknowledgement | Compliance-owned rule sets per product and service model |
 | Contract generation | Produce the exact contract documents | The customer must approve an immutable version | Mock record | Versioned templates, hash bound into the approved action |
-| QTSP signing | Legally valid signature where required | The signature level depends on the contract, not on the technology | Mock; a mock cannot claim a qualified level (tested) | QTSP on an EU trusted list, asynchronous signature lifecycle |
+| QTSP signing | Legally valid signature where required | The signature level depends on the contract, not on the technology | Test signer, signed callbacks, hash binding, failure handling. Cannot claim a qualified level (tested). **No QES** | QTSP on an EU trusted list, asynchronous signature lifecycle |
 | Depot provider | Opens the account, is the only source of `OPENED` | Licensed entity; a synchronous answer may not open anything | Mock, versioned adapter, signed callback | Contracted provider, mutually authenticated, signed events |
 | Human intervention | A person can always be asked, and can step in | Customer right in scope cases, plus operational need | Button, durable case, DEV operator console | Staffed case management, SLAs, secure customer messaging |
 | Evidence registry and audit | Prove what happened, later | Regulators and disputes need it, not just logs | Append-only table by trigger, receipts bound to digests | Hash chain or WORM store, retention rules, SIEM export |
-| Partner attribution | Record which channel an onboarding belongs to | Commercial and regulatory exposure | From the bank's register, fixed with the consent | Governed partner directory, contract versions, reconciliation |
+| Partner attribution | Record which channel an onboarding belongs to | Commercial and regulatory exposure | Claims, deterministic rules, conflict review, sample commission from invented contracts | Governed partner directory, real contract versions, reconciliation |
 | Monitoring and operational security | Detect abuse and failure | Agent traffic is automated and fast | JSON logs, correlation IDs | SLOs, alerting, tested runbooks, DORA controls where they apply |
 
 ### The end-to-end sequence
@@ -240,16 +242,16 @@ Peak sizes are **assumptions for planning discussion**, at stages 2 to 4. Not al
 
 | Area | Today | What production needs |
 |---|---|---|
-| Bank identity and strong customer authentication | DEV sign-in accepts any synthetic ID. OIDC boundary and claim checks exist, but no provider is configured, so that mode fails closed | Bank SCA, eID or EUDI wallet in a bank channel. DEV routes absent from the production build. A verified OIDC login proves authentication only, not KYC or eID |
+| Bank identity and strong customer authentication | A local OIDC provider proves the mechanism; the DEV sign-in remains for older scenarios and accepts any synthetic ID. No bank provider exists, and an incomplete configuration fails closed | Bank SCA, eID or EUDI wallet in a bank channel. DEV routes absent from the production build. A verified OIDC login proves authentication only, not KYC or eID |
 | Regulated KYC and AML | Mock, stored with `mock=true` | Contracted providers, compliance sign-off, reliance only under statutory conditions, asynchronous outcomes |
 | Tax-authority integrations | Local format check of an invented identifier. Identifier discarded. No BZSt or other authority involved | Real identifier under encryption and retention rules. Whatever checks and reporting duties apply (for example IdNr, exemption orders, church tax, CRS/FATCA), to be established by tax and legal |
-| QTSP and legally valid signing | Mock record, no legal effect | QTSP on an EU trusted list. Signature level determined per contract. Asynchronous lifecycle (typed boundary exists, isolated) |
-| OAuth, OIDC, FAPI, PAR, DPoP, mTLS | Opaque DEV tokens with scope and resource binding; bearer tokens not sender-constrained | OIDC for customers. FAPI 2.0 with PAR for confidential agent clients where justified. DPoP or mTLS sender constraint. RAR for fine-grained authorization, token exchange only where justified |
+| QTSP and legally valid signing | Test signer with signed callbacks, no legal effect | QTSP on an EU trusted list. Signature level determined per contract. Asynchronous lifecycle (typed boundary exists, isolated) |
+| OAuth, OIDC, FAPI, PAR, DPoP, mTLS | OIDC with a local provider. Delegated agent tokens are DPoP-bound; DEV tokens stay plain bearer tokens. No FAPI, PAR server or mTLS | OIDC for customers. FAPI 2.0 with PAR for confidential agent clients where justified. DPoP or mTLS sender constraint. RAR for fine-grained authorization, token exchange only where justified |
 | Tamper-evident evidence | Append-only by database trigger, rewritable with database access | Hash chain or WORM storage, retention rules, independent verification |
 | Monitoring, abuse protection, rate limiting | JSON logs; **no rate limits** | Edge limits, abuse detection, alerting, audit-volume controls |
 | Real provider deprecation and migration | Synthetic v1/v2 adapter with explicit fallback policy. The signed manifest does not list versions, and the callback is unversioned. A timeout's outcome is unknown and not reconciled | Versions and sunset dates in the signed manifest, deprecation monitoring, provider reconciliation, versioned events, contract tests in CI |
 | Operational resilience | SQLite, single node, depot call inside the transaction, no outbox | Managed database, outbox, idempotent retries, tested disaster recovery, DORA controls where they apply |
-| Partner and regulator governance | Register in code, no commission, no partner process | Governed directory, contracts, partner council, regulator engagement where required |
+| Partner and regulator governance | Register in code, sample rules and contracts, service-level conflict resolution, no payment, no partner process | Governed directory, contracts, partner council, regulator engagement where required |
 
 The findings F-2 to F-7 from Phase 06 also stay open, and the F-1 residual: anyone who can use the DEV sign-in form
 can claim to be a customer. See [phase-06-security-reliability.md](phase-06-security-reliability.md).

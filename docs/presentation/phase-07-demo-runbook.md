@@ -640,6 +640,35 @@ Phase 07 and its older numbers.
 **Still not measured:** a stopwatch rehearsal, clicks by a human hand on the integrated page, a projector, any browser but
 Chrome, and the effect of the approved claims on a real model.
 
+## 13. The full-trust journey
+
+Separate from the 2-minute walkthrough above, which stays as it is. It adds discovery, provider verification, delegation, a real
+OIDC flow against a local provider, identity proofing, signing and attribution. Details:
+[agentic-commerce-integration.md](../agentic-commerce-integration.md).
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.demo_trust_journey
+```
+
+It starts four services as separate processes on `127.0.0.1` with fresh keys, then runs the independent agent as a further process. It
+needs no internet and no key, and exits with `0` only if every check holds. The script plays the customer's browser on
+the real pages.
+
+| Section | Point at | What to say |
+|---|---|---|
+| A | `provider_verified` | "The agent trusts only the anchor it was configured with. Integrity, membership, identity and licence are separate answers, and licence is unknown." |
+| A | `delegation_granted`, `DPoP` | "The customer allowed this agent on the bank's page. The token is bound to the agent's key and to the customer's limits." |
+| A | `final_status` | "Only the provider's signed confirmation reaches `OPENED`." |
+| B | Contract hash, level | "The hash appears in the package, the signature and the audit. Level `TEST_NO_LEGAL_EFFECT`: this is no qualified signature." |
+| C | `untrusted_anchor` | "A provider this agent cannot chain to a trusted anchor gets nothing." |
+| D | `revoked_delegation_refused` | "The customer withdrew. Every token stops at once." |
+| E, F | `MANUAL_REVIEW` | "A failed identification or signature goes to a person, and no depot opens." |
+
+**Never say:** "real identity verification", "qualified signature", "FAPI compliant", "verified bank", "licensed", "publicly discoverable", "compliant".
+
+**If asked "Can a real AI agent use this?"** A separate process that imports nothing from the bank does it over HTTP, and the official A2A SDK could
+read the card and get an answer. That process is deterministic, not an LLM. Nothing is deployed publicly.
+
 ## Finding F-8: the customer forms failed in real browsers
 
 Found in this phase, the first time the customer pages were opened in a real browser. **Until then, no form on

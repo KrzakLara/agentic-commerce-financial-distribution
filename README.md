@@ -2,6 +2,12 @@
 
 A modular-monolith FastAPI project for the TRUSTEQ GmbH AI Engineering case study.
 
+**Trust integration (local, synthetic):** an independent agent process can discover and verify a synthetic provider, get a
+customer's delegation, prepare an application, and reach a synthetic `OPENED` through signed provider callbacks. Run
+`.\.venv\Scripts\python.exe -m scripts.demo_trust_journey`. Status per area, with what is not real:
+[docs/agentic-commerce-integration.md](docs/agentic-commerce-integration.md). No regulated identification, no qualified signature and
+no real provider is involved.
+
 **Current status: final integration before the presentation.** Synthetic tax information, a
 knowledge-and-experience questionnaire, the versioned provider adapter and approved product claims are part of
 the real journey: [docs/final-integration.md](docs/final-integration.md). The target architecture is in
@@ -394,7 +400,7 @@ secret in **production**; or `llm` mode without `TRUSTEQ_ENABLE_LLM=true`. Phase
 
 ## Next step
 
-The presentation. No further coding is planned unless the demo needs it.
+The presentation.
 
 ## Git
 

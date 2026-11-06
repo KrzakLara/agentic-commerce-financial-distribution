@@ -14,6 +14,7 @@ the next start; SQLite DDL is not reliably transactional through the pysqlite dr
   application-identity trigger is added; ``review_cases`` and ``channel_attributions`` are new.
 * v4 -> v5 (final integration): ``tax_information`` and ``appropriateness_assessments`` are new
   tables. Nothing existing changes; ``create_all`` adds them and existing rows stay untouched.
+* v5 -> v6 (trust integration): only new tables (`app.repositories.trust_orm`), in the same way.
 
 SQLite cannot drop a NOT NULL / UNIQUE constraint in place, hence "rebuild": rename the old
 table, let ``create_all`` create the new one with all constraints and triggers, copy the rows,
@@ -33,7 +34,8 @@ from app.domain.mandate import AUTHORIZATION_ISSUER
 # 3: Phase 03 rebuilds mandates; adds agent_access_tokens and customer_sessions
 # 4: Phase 04 check attempts, review cases, channel attributions, disclosure binding
 # 5: final integration adds tax_information and appropriateness_assessments (new tables only)
-SCHEMA_VERSION = 5
+# 6: trust integration adds delegation, identity, contract, attribution and policy tables (new only)
+SCHEMA_VERSION = 6
 _MEMORY_URLS = {"sqlite://", "sqlite:///:memory:"}
 
 
@@ -167,7 +169,7 @@ def _add_missing_columns(connection: Connection) -> None:
 
 def init_database(engine: Engine) -> None:
     """Create tables, indexes and triggers if missing, upgrade older schemas, stamp the version."""
-    from app.repositories import orm  # (registers the models on Base.metadata)
+    from app.repositories import orm, trust_orm  # noqa: F401 (registers the models on Base.metadata)
 
     with engine.begin() as connection:
         version = connection.execute(text("PRAGMA user_version")).scalar_one()

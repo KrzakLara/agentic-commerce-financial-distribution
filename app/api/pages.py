@@ -299,6 +299,7 @@ def review_page(
     channel: Channel | None = None,
     human_csrf_token: str = "",
     information: InformationPanel | None = None,
+    trust_card: str = "",
 ) -> str:
     action = review.handoff.action
     summary = [
@@ -353,6 +354,7 @@ def review_page(
         f"{_product_cards(product)}"
         f"{_card('Disclosure', disclosure + _risk_text(review.document_text))}"
         f"{_card('Digests', _facts(digests))}"
+        f"{trust_card if can_confirm else ''}"
         f"{information_cards}"
         f"{_card('Your decision', decision, 'card decision')}"
     )
@@ -567,6 +569,7 @@ def result_page(
     ok: bool,
     human_request: tuple[str, str] | None = None,
     step: tuple[str, str] | None = None,
+    extra_html: str = "",
 ) -> str:
     """A short outcome page; `human_request` = (application_id, CSRF token) adds the
     "Speak to a person" form (e.g. after a confirmation); `step` adds the progress line."""
@@ -575,6 +578,7 @@ def result_page(
     if step == STEP_CONFIRMED:
         items = "".join(f"<li>{escape(line)}</li>" for line in _NEXT_STEPS)
         body += _card("What happens next", f'<div class="card-body"><ol>{items}</ol></div>')
+    body += extra_html
     if human_request is not None:
         body += human_request_form(*human_request)
     return _document(title, body, step=step)

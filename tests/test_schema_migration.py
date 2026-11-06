@@ -115,7 +115,7 @@ def test_a_phase02_database_is_upgraded_in_place_without_losing_data(tmp_path: P
     upgrade(db)
 
     with sqlite3.connect(db) as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 5
+        assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 6
         for table, rows in before.items():
             assert con.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall() == rows  # noqa: S608
         con.row_factory = sqlite3.Row

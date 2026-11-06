@@ -7,7 +7,7 @@ Repositories never commit. The unit of work owns the transaction, so a business 
 from collections.abc import Iterable
 from datetime import datetime
 from types import TracebackType
-from typing import Protocol, Self
+from typing import Any, Protocol, Self
 
 from app.domain.application import DepotApplication
 from app.domain.attribution import ChannelAttribution
@@ -218,6 +218,7 @@ class UnitOfWork(Protocol):
     attributions: ChannelAttributionRepository
     depot_submissions: DepotSubmissionRepository
     customer_information: CustomerInformationRepository
+    trust: Any  # the SQLAlchemy session of this unit of work, for `app.repositories.trust_orm`
 
     def __enter__(self) -> Self: ...
 

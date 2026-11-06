@@ -80,8 +80,37 @@ class CustomerSessionService:
         self._secret_factory = secret_factory
         self._ttl = timedelta(seconds=ttl_seconds)
 
+    def end(self, secret: str | None, *, correlation_id: str) -> bool:
+        """Log out: revoke this browser's session on the server. True if it was active."""
+        session = self.resolve(secret)
+        if session is None:
+            return False
+        now = self._clock()
+        with self._uow_factory() as uow:
+            uow.customer_sessions.revoke(session.session_id, now)
+            uow.audit.append(
+                AuditEvent(
+                    event_id=f"evt-{self._id_factory()}",
+                    occurred_at=now,
+                    correlation_id=correlation_id,
+                    event_type="customer.session_ended",
+                    actor_type=AuditActorType.CUSTOMER,
+                    actor_id=session.customer_id,
+                    application_id=None,
+                    outcome=AuditOutcome.SUCCESS,
+                    details={"session_id": session.session_id},
+                )
+            )
+            uow.commit()
+        return True
+
     def start(
-        self, *, customer_id: str, replaces: str | None, correlation_id: str
+        self,
+        *,
+        customer_id: str,
+        replaces: str | None,
+        correlation_id: str,
+        simulated: bool = True,
     ) -> tuple[CustomerSession, str]:
         """Create a session after the (simulated) sign-in; revoke the browser's previous one.
 
@@ -117,7 +146,7 @@ class CustomerSessionService:
                     outcome=AuditOutcome.SUCCESS,
                     details={
                         "session_id": session.session_id,
-                        "simulated_sign_in": True,
+                        "simulated_sign_in": simulated,
                         "expires_at": session.expires_at.isoformat(),
                         "replaced_previous_session": replaced,
                     },

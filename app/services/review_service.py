@@ -133,6 +133,13 @@ def allowed_decisions(
         return frozenset({ReviewDecision.ACKNOWLEDGE})
     if case.reason is ReviewCaseReason.CUSTOMER_REQUESTED_HUMAN:
         return frozenset({ReviewDecision.RESUME})
+    if case.reason in (
+        ReviewCaseReason.IDENTITY_PROOFING_NOT_COMPLETED,
+        ReviewCaseReason.SIGNATURE_NOT_COMPLETED,
+    ):
+        # The person lets the customer try again at the same step, or rejects. Never "approved":
+        # the gate still needs a verified proofing result or a signed package.
+        return frozenset({ReviewDecision.RESUME, ReviewDecision.REJECT})
     decisions = {ReviewDecision.REJECT}
     if case.check_attempt is not None and case.status is not ReviewCaseStatus.AWAITING_INFORMATION:
         decisions.add(ReviewDecision.RE_EVALUATE)
