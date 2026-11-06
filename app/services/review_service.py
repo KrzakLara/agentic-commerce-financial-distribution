@@ -70,10 +70,7 @@ PAUSABLE_STEPS = frozenset(
 )
 EVIDENCE_REFERENCE = re.compile(r"^SYN-[A-Z0-9][A-Z0-9\-]{2,40}$")  # synthetic store refs only
 MAX_EVIDENCE_ITEMS = 10
-HUMAN_REQUEST_MESSAGE = (
-    "Your request to speak with a person has been recorded. A member of staff will contact "
-    "you through the bank's usual channels."
-)
+HUMAN_REQUEST_MESSAGE = "Your request to speak with a person has been recorded."
 
 # DEV/TEST synthetic operator directory. Operators are bank staff: they are never agents,
 # customers or providers, hold no agent token and never call the agent API.

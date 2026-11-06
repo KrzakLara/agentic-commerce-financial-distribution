@@ -2,9 +2,13 @@
 
 A modular-monolith FastAPI project for the TRUSTEQ GmbH AI Engineering case study.
 
-**Current status: Phase 05 - a real LLM agent behind an explicit flag, measured on the 20 fixed
-cases of ADR-09 ([docs/phase-05-evaluation.md](docs/phase-05-evaluation.md)).** Scripted mode stays
-the default and needs no key.
+**Current status: final integration before the presentation.** Synthetic tax information, a
+knowledge-and-experience questionnaire, the versioned provider adapter and approved product claims are part of
+the real journey: [docs/final-integration.md](docs/final-integration.md). The target architecture is in
+[docs/technical-concept-2030.md](docs/technical-concept-2030.md), the evidence in
+[docs/presentation/evidence-summary.md](docs/presentation/evidence-summary.md). Scripted mode stays the default and
+needs no key. A real LLM agent sits behind an explicit flag, measured on the 20 fixed cases of ADR-09
+([docs/phase-05-evaluation.md](docs/phase-05-evaluation.md)).
 
 **Phase 04 - verified discovery, disclosures, attribution and human review.**
 Provider manifests are signed, versioned and expiring and are verified against the bank's own
@@ -150,16 +154,18 @@ py -3.12 -m venv .venv
 (Using `.\.venv\Scripts\python.exe` directly means you do not need to activate the venv, so no
 execution-policy change is required.) Shortcut: `powershell -ExecutionPolicy Bypass -File scripts\setup.ps1`
 
-## Run the three demos (recommended first step)
+## Run the demos (recommended first step)
 
 ```powershell
+.\.venv\Scripts\python.exe -m scripts.demo_integrated     # INTEGRATED: discovery ... tax, assessment ... OPENED
 .\.venv\Scripts\python.exe -m scripts.demo_happy           # HAPPY: ... -> OPENED
 .\.venv\Scripts\python.exe -m scripts.demo_denied          # DENIED: refused, audited, state unchanged
 .\.venv\Scripts\python.exe -m scripts.demo_manual_review   # MANUAL REVIEW: case, request-human, operator
 ```
 
-All three are offline (no LLM key, no network beyond `127.0.0.1`), deterministic, use their own
-throw-away database, print no token, challenge or key, and exit non-zero if any check fails.
+All are offline (no LLM key, no network beyond `127.0.0.1`), deterministic, use their own
+throw-away database, print no token, challenge or key, and exit non-zero if any check fails. The last three are the
+original P0 scenarios: they switch the tax and assessment step off, and say so.
 
 **2-3 minute presentation** (each demo runs in seconds; the times below are speaking time): run
 `demo_happy --no-restart` (about 40 s: agent drafts, customer
@@ -230,8 +236,10 @@ Model, limits, results and limitations: [docs/phase-05-evaluation.md](docs/phase
 
 * Health check: <http://127.0.0.1:8000/health>; Swagger UI: <http://127.0.0.1:8000/docs>
 * The first start creates `trusteq.db` in the current folder (git-ignored) and its tables.
-* Public contract: provider manifest, products, applications (create / read / handoff / submit)
-  and the customer confirmation. The provider callback and HTML pages are intentionally not listed.
+* Public contract: provider manifest, products, approved claims, applications (create / read / handoff /
+  submit) and the customer routes. The provider callback and HTML pages are intentionally not listed.
+* Customers supply tax information and answer the knowledge questions before they can confirm. Set
+  `TRUSTEQ_CUSTOMER_INFORMATION_REQUIRED=false` for the original flow.
 
 ### Drive the flow by hand
 
@@ -264,8 +272,9 @@ $handoff.confirmation_url      # give this link to the CUSTOMER
 
 3. **Customer:** open `$handoff.confirmation_url` in a browser. The page first asks for the
    *simulated* sign-in - enter `demo-customer-1` - then shows provider, product, channel,
-   application reference, the exact action and the disclosure version. Press **Confirm and
-   authorize**. (Any other customer id is refused; the form is CSRF-protected.)
+   application reference, the exact action and the disclosure version. Enter the synthetic tax
+   information (`DE`, `SYNTH-TAX-700421`, not a US person) and answer the questions. Then press
+   **Confirm and authorize**. (Any other customer id is refused; the forms are CSRF-protected.)
 
 ```powershell
 # 4) AGENT again: resume after the customer, submit, read the status
@@ -357,16 +366,20 @@ secret in **production**; or `llm` mode without `TRUSTEQ_ENABLE_LLM=true`. Phase
 | Agent | scripted (default, no key) and a real LLM behind an explicit flag: the same six tools, REST only; allowlisted, typed, bounded; measured on 20 fixed cases | every provider and catalog behind it | provider-side explainer, MCP/A2A adapters, production monitoring of model behaviour |
 | Agent authorization | **real and tested, controlled DEV implementation**: opaque bearer tokens stored as SHA-256 hashes; issuer, audience, expiry, `jti`, revocation, per-operation scopes, resource binding; single-use bootstrap; revoked at terminal states | first grant from a trusted DEV CLI | OAuth 2.0 / FAPI 2.0, sender-constrained tokens (DPoP/mTLS), RFC 9396 / RFC 8693 |
 | Customer authentication + intervention | server-side session (hashed secret, HttpOnly/SameSite=Strict/Secure-on-HTTPS cookies for the pages and the customer API, expiry, rotation) + per-target CSRF tokens; "Speak to a person" and `request-human` require both | **DEV simulation** of the sign-in itself, which any client can use or script (F-1 residual limit) | bank-controlled strong authentication (online banking / eID / EUDI wallet), a customer case view, phone/chat channels |
-| KYC / compliance / contract / depot provider | the deterministic workflow around them; the signed callback is the only path to `OPENED` | **MOCK** results, `mock=true`, `MOCK-` references | contracted regulated providers, partner integration with mTLS |
-| Policy, state machine, audit, idempotency, persistence, recovery | real and tested (schema v4 with resumable upgrades) | - | HA database, durable workflow engine, DORA controls, security review |
+| Tax information | customer page and JSON API, deterministic validation, required before confirmation, identifier discarded | synthetic format only; no tax authority | encrypted storage and retention; checks and reporting as legally required |
+| Appropriateness | customer page and JSON API, deterministic result, warning and acknowledgement; never blocks the account | synthetic questions, not legal compliance; no order step | compliance-owned rule sets per product and service |
+| Product communication | approved claims with source and version at the agent's tool boundary; claim check API; hostile catalog text excluded | synthetic catalog | signed claim feeds with legal sign-off; the bank still does not control third-party wording |
+| KYC / compliance / contract / depot provider | the deterministic workflow around them; versioned provider adapter with an explicit fallback policy; the signed callback is the only path to `OPENED` | **MOCK** results, `mock=true`, `MOCK-` references | contracted regulated providers, partner integration with mTLS |
+| Policy, state machine, audit, idempotency, persistence, recovery | real and tested (schema v5 with resumable upgrades) | - | HA database, durable workflow engine, DORA controls, security review |
 
 ## Current security limitations
 
 * The **customer sign-in and the operator identities are simulations**: anyone who completes the
   dev sign-in can claim any customer (what is real is the server-side session, its expiry,
-  rotation, cookie flags and CSRF binding around it); the Phase 02 JSON confirmation ceremony
-  still accepts the dev customer header; anyone who can run the operator console on the server
-  can act as a synthetic operator. All of these are disabled in production.
+  rotation, cookie flags and CSRF binding around it); anyone who can run the operator console on
+  the server can act as a synthetic operator. Both are disabled in production. The dev customer
+  header no longer works on any route. No external identity provider is available to this project:
+  `TRUSTEQ_CUSTOMER_IDENTITY_MODE=oidc` only makes the customer pages fail closed.
 * There is no customer-facing case view (`GET /v1/customer/cases/{id}` from ADR section 09 is
   deferred: it must never reveal internal review reasons).
 * Manifest signatures use a **shared HMAC key** (a symmetric stand-in): whoever holds the key could
@@ -379,12 +392,12 @@ secret in **production**; or `llm` mode without `TRUSTEQ_ENABLE_LLM=true`. Phase
   compliance or certification is claimed (no BaFin, MiFID II or WpHG claim); counsel review is
   required before any real deployment.
 
-## Next implementation phase
+## Next step
 
-**Phase 06** - stabilization and test evidence (not started).
+The presentation. No further coding is planned unless the demo needs it.
 
 ## Git
 
-Branch `main`, tracking a **private** GitHub repository (`origin`). Phase 04 work stays local
+Branch `main`, tracking a **private** GitHub repository (`origin`). New work stays local
 and uncommitted until it is reviewed. `.gitignore` excludes `.env`, `.venv/`, caches, SQLite files
 (including WAL files), build output, temp files and `.claude/`.

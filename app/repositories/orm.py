@@ -26,6 +26,7 @@ from typing import Any
 from sqlalchemy import (
     DDL,
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -402,6 +403,45 @@ class ChannelAttributionRow(Base):
             name="ck_attributions_partner",
         ),
     )
+
+
+class TaxInformationRow(Base):
+    """Locally validated synthetic tax information. There is deliberately no identifier column."""
+
+    __tablename__ = "tax_information"
+
+    application_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("applications.application_id", ondelete="RESTRICT"), primary_key=True
+    )
+    customer_id: Mapped[str] = mapped_column(String(64))
+    source: Mapped[str] = mapped_column(String(40))
+    tax_residency_country: Mapped[str] = mapped_column(String(2))
+    us_person_declared: Mapped[bool] = mapped_column(Boolean)
+    exemption_order_amount_eur: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    church_tax_objection: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    field_statuses: Mapped[dict[str, str]] = mapped_column(JSON)
+    external_verification: Mapped[str] = mapped_column(String(20))
+    recorded_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
+class AppropriatenessRow(Base):
+    """The latest knowledge-and-experience result of an application (synthetic prototype)."""
+
+    __tablename__ = "appropriateness_assessments"
+
+    application_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("applications.application_id", ondelete="RESTRICT"), primary_key=True
+    )
+    customer_id: Mapped[str] = mapped_column(String(64))
+    product_level: Mapped[str] = mapped_column(String(20))
+    outcome: Mapped[str] = mapped_column(String(40))
+    reasons: Mapped[list[str]] = mapped_column(JSON)
+    knows_capital_loss: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    knows_no_guarantee: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    experience: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    rule_set_version: Mapped[str] = mapped_column(String(40))
+    acknowledged_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(UtcDateTime())
 
 
 class DepotSubmissionRow(Base):

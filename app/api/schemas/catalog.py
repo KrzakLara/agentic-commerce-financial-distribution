@@ -5,16 +5,49 @@ suitability assessment, no recommendation, no claim of MiFID II / WpHG complianc
 """
 
 from datetime import date, datetime
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.catalog import Channel, Fee, Product, Provider, SourceReference
 from app.integrations.catalog_fixture import SIGNATURE_ALGORITHM, VERIFICATION_CHECKS
+from app.services.bank_claims import ApprovedClaim, ClaimDecision, ClaimKind, SourceCitation
 
 PRODUCT_NOTICE = (
     "Official, non-personalized product information from the provider's verified catalog "
     "(MOCK). It is not investment advice and not a suitability assessment."
 )
+
+
+class ApprovedClaimsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    claims: list[ApprovedClaim]
+    notice: str = (
+        "Facts approved by the bank's deterministic check against its verified catalog (MOCK). "
+        "Not investment advice, and no statement about what a third-party agent displays."
+    )
+
+
+class ClaimVerificationRequest(BaseModel):
+    """A structured claim to check. Bounded, and unknown fields are refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: ClaimKind
+    provider_id: Annotated[str, Field(min_length=1, max_length=64)]
+    product_id: Annotated[str, Field(min_length=1, max_length=64)] | None = None
+    subject: Annotated[str, Field(min_length=1, max_length=64)] | None = None
+    text: Annotated[str, Field(min_length=1, max_length=1000)]
+    source: SourceCitation | None = None
+
+
+class ClaimVerificationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: ClaimDecision
+    reason: str
+    safe_response: str | None = None
 
 
 class ChannelView(BaseModel):

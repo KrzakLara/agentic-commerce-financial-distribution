@@ -20,6 +20,7 @@ from app.repositories.workflow_repositories import (
     SqlAlchemyAgentTokenRepository,
     SqlAlchemyChannelAttributionRepository,
     SqlAlchemyCheckRepository,
+    SqlAlchemyCustomerInformationRepository,
     SqlAlchemyCustomerSessionRepository,
     SqlAlchemyDepotSubmissionRepository,
     SqlAlchemyHandoffRepository,
@@ -205,6 +206,7 @@ class SqlAlchemyUnitOfWork:
         self.review_cases = SqlAlchemyReviewCaseRepository(self._session)
         self.attributions = SqlAlchemyChannelAttributionRepository(self._session)
         self.depot_submissions = SqlAlchemyDepotSubmissionRepository(self._session)
+        self.customer_information = SqlAlchemyCustomerInformationRepository(self._session)
         return self
 
     def __exit__(

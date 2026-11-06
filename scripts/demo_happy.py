@@ -91,8 +91,22 @@ def free_port() -> int:
 class Server:
     """The real application, started exactly like a developer would (uvicorn)."""
 
-    def __init__(self, workdir: Path, db_path: Path, callback_key: str, port: int) -> None:
+    def __init__(
+        self,
+        workdir: Path,
+        db_path: Path,
+        callback_key: str,
+        port: int,
+        *,
+        customer_information_required: bool = False,  # the P0 scenarios predate this step
+        depot_scenario: str = "current_v2",
+    ) -> None:
         self.base_url = f"http://127.0.0.1:{port}"
+        if not customer_information_required:
+            print(
+                "Note: original P0 scenario, with the tax and assessment step switched off. "
+                "python -m scripts.demo_integrated shows the integrated journey."
+            )
         self._port = port
         self._workdir = workdir
         self._env = {k: v for k, v in os.environ.items() if not k.startswith("TRUSTEQ_")}
@@ -102,6 +116,8 @@ class Server:
                 "TRUSTEQ_DATABASE_URL": f"sqlite:///{db_path.as_posix()}",
                 "TRUSTEQ_MOCK_PROVIDER_CALLBACK_SECRET": callback_key,
                 "TRUSTEQ_LOG_LEVEL": "WARNING",
+                "TRUSTEQ_CUSTOMER_INFORMATION_REQUIRED": str(customer_information_required).lower(),
+                "TRUSTEQ_MOCK_DEPOT_SCENARIO": depot_scenario,
                 "PYTHONPATH": str(ROOT),
             }
         )

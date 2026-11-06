@@ -37,6 +37,7 @@ PYTEST = [
     "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider",
     "--deselect", "tests/test_demo_script.py",
     "--deselect", "tests/test_demo_scripts_phase04.py",
+    "--deselect", "tests/test_demo_integrated.py",
 ]  # fmt: skip
 
 
@@ -117,9 +118,11 @@ MUTANTS = [
       ('    fetch_site = request.headers.get("sec-fetch-site")\n',
        '    return False\n    fetch_site = request.headers.get("sec-fetch-site")\n')),
     m("M20", "agent credentials are accepted on the customer JSON ceremony", CUSTOMER,
-      ("    if agent_credentials_presented(request):\n"
+      ("    ] = None,\n) -> HandoffConfirmResponse:\n"
+       "    if agent_credentials_presented(request):\n"
        "        _refuse_agent_credentials(request, handoff_id, service, authorization, "
-       "correlation_id)\n        raise AuthenticationRequiredError()\n", "")),
+       "correlation_id)\n        raise AuthenticationRequiredError()\n",
+       "    ] = None,\n) -> HandoffConfirmResponse:\n")),
     m("M21", "customer sessions never expire", "app/domain/customer_session.py",
       ("return self.revoked_at is None and self.created_at <= now < self.expires_at",
        "return self.revoked_at is None")),
@@ -224,8 +227,12 @@ MUTANTS = [
     # --- Phase 04 finalization: customer intervention needs the session + CSRF --------------
     m("M53", "request-human trusts the self-asserted customer header instead of the session",
       CUSTOMER,
-      ("    customer = session_customer(request, settings, sessions, cookie)\n"
+      ('        deny(AuditActorType.CUSTOMER, None, "cross_site_request")\n'
+       "        raise CrossSiteRequestError()\n"
+       "    customer = session_customer(request, settings, sessions, cookie)\n"
        "    if customer is None or customer.session_secret is None:",
+       '        deny(AuditActorType.CUSTOMER, None, "cross_site_request")\n'
+       "        raise CrossSiteRequestError()\n"
        '    header = request.headers.get("X-Dev-Customer-Id")\n'
        "    customer = CustomerContext(header) if is_valid_customer_id(header) else None\n"
        "    if customer is None:"),
@@ -256,6 +263,60 @@ MUTANTS = [
       ("    if _cross_site(request):\n        raise CrossSiteRequestError()\n"
        "    customer = session_customer(request, settings, sessions, API_SESSION_COOKIE)",
        "    customer = session_customer(request, settings, sessions, API_SESSION_COOKIE)")),
+    # --- final integration: customer information, versioned provider, claims, identity -------
+    m("M59", "a customer may confirm without tax information and assessment", FLOW,
+      ("            if not information.allowed:\n", "            if False:\n")),
+    m("M60", "the agent may submit without the customer's information", FLOW,
+      ("            if decision.allowed:\n"
+       "                decision = self._customer_information(uow, application)\n", "")),
+    m("M61", "the tax and assessment routes do not check the CSRF token", CUSTOMER,
+      ("    if not csrf_matches(customer.session_secret, scope, handoff_id, presented_csrf):",
+       "    if False:")),
+    m("M62", "agent credentials are accepted on the tax and assessment routes", CUSTOMER,
+      ('with the one-time challenge.\n    """\n'
+       "    if agent_credentials_presented(request):\n"
+       "        _refuse_agent_credentials(request, handoff_id, service, authorization, "
+       "correlation_id)\n        raise AuthenticationRequiredError()\n",
+       'with the one-time challenge.\n    """\n')),
+    m("M63", "the tax and assessment routes accept cross-site browser requests", CUSTOMER,
+      ("        raise AuthenticationRequiredError()\n"
+       "    if _cross_site(request):\n"
+       "        raise CrossSiteRequestError()\n"
+       "    customer = session_customer(request, settings, sessions, cookie)\n"
+       "    if customer is None or customer.session_secret is None:\n"
+       "        raise AuthenticationRequiredError()\n",
+       "        raise AuthenticationRequiredError()\n"
+       "    customer = session_customer(request, settings, sessions, cookie)\n"
+       "    if customer is None or customer.session_secret is None:\n"
+       "        raise AuthenticationRequiredError()\n")),
+    m("M64", "a warning needs no acknowledgement from the customer", "app/services/policy.py",
+      ("        and assessment.acknowledged_at is None\n", "        and False\n")),
+    m("M65", "a paused application still accepts tax information and answers",
+      "app/services/customer_information_service.py",
+      ("if application is None or application.status is not S.AWAITING_AUTHORIZATION:",
+       "if application is None:")),
+    m("M66", "the adapter falls back without the provider's permission",
+      "app/integrations/provider_contract.py",
+      ("                if not self._fallback_permitted(position, gone.fallback_to):\n"
+       "                    break\n", "")),
+    m("M67", "a provider answer may carry undefined fields such as opened",
+      "app/integrations/provider_contract.py",
+      ('model_config = ConfigDict(frozen=True, extra="forbid", strict=True)',
+       'model_config = ConfigDict(frozen=True, extra="ignore", strict=True)')),
+    m("M68", "a provider timeout is retried in another version",
+      "app/integrations/provider_contract.py",
+      ('                return self._refused("provider_unavailable", version)'
+       "  # it may have acted\n",
+       "                continue\n")),
+    m("M69", "narrative provider text reaches the agent as an approved claim",
+      "app/integrations/rest_gateway.py",
+      ("if claim.kind in _CLAIM_KINDS_FOR_THE_AGENT and claim.provider_id == args.provider_id",
+       "if claim.provider_id == args.provider_id")),
+    m("M70", "published claims skip the deterministic check", "app/services/bank_claims.py",
+      ("if claim.source is not None and validate_claim(catalog, claim).approved",
+       "if claim.source is not None")),
+    m("M71", "oidc mode leaves the DEV sign-in active", "app/core/config.py",
+      ('            and self.customer_identity_mode == "dev_simulated"\n', "")),
 ]  # fmt: skip
 
 

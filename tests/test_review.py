@@ -1,6 +1,8 @@
 """Phase 04 human review: the customer's request for a person, the synthetic compliance review,
 the operator workflow - and that no human action bypasses a mandatory control."""
 
+import html
+import re
 from collections.abc import Callable, Sequence
 
 import pytest
@@ -632,6 +634,53 @@ def test_the_operator_console_refuses_what_it_must(
         "--category", "SOURCE_OF_FUNDS_CONFIRMATION", "--reference", "not synthetic",
     ) == 1  # fmt: skip
     assert flow.status_of(app_id) == "MANUAL_REVIEW"
+
+
+def test_the_page_offers_confirm_only_while_the_bank_would_accept_it(flow: Flow) -> None:
+    """Asking for a person pauses the application, so the bank refuses a confirmation. The page
+    must then not offer one, and offers it again once staff resume the application."""
+    started = flow.start()
+    app_id = started.application_id
+    url = f"/customer/handoffs/{started.handoff_id}"
+    flow.page_sign_in(started)
+
+    def page() -> str:
+        return flow.customer_http.get(url, params={"token": started.nonce}).text
+
+    before = page()
+    assert "Confirm and authorize" in before and "waiting for your confirmation" in before
+    csrf = re.search(
+        r'/request-human"><input type="hidden" name="csrf_token" value="([^"]+)"', before
+    )
+    assert csrf
+    asked = flow.customer_http.post(
+        f"/customer/applications/{app_id}/request-human",
+        data={"csrf_token": csrf.group(1), "category": "OTHER"},
+    )
+    assert asked.status_code == 200 and flow.status_of(app_id) == "MANUAL_REVIEW"
+
+    paused = page()
+    assert "Confirmation is not available at the moment" in paused
+    assert "Confirm and authorize" not in paused and 'name="action_digest"' not in paused
+    assert "waiting for your confirmation" not in paused
+    assert "will contact" not in paused and "stays paused until the bank's staff resume it" in (
+        html.unescape(paused)
+    )
+    assert "Basic Securities Account (MOCK)" in paused and "Speak to a person" in paused  # stay
+    assert '<li class="now" aria-current="step"><span class="num">2</span>' in paused
+    for word in ("compliance", "manual_review", "customer_requested_human", "aml"):
+        assert word not in paused.lower(), word
+
+    form = {"token": started.nonce, "action_digest": started.action_digest,
+            "csrf_token": flow.page_csrf(started)}  # fmt: skip
+    assert flow.customer_http.post(f"{url}/confirm", data=form).status_code == 409  # still refused
+    assert flow.sql("SELECT COUNT(*) FROM consent_receipts") == [(0,)]
+
+    reviews(flow).decide(REVIEWER, active_case(flow, app_id), D.RESUME, "corr-op")
+    assert flow.status_of(app_id) == "AWAITING_AUTHORIZATION"
+    assert "Confirm and authorize" in page()
+    assert flow.customer_http.post(f"{url}/confirm", data=form).status_code == 200
+    assert flow.sql("SELECT COUNT(*) FROM consent_receipts") == [(1,)]
 
 
 def test_the_operator_console_is_off_in_production(flow: Flow) -> None:

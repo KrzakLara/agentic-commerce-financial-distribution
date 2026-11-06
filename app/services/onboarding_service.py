@@ -81,6 +81,7 @@ from app.services.authorization_service import AgentPrincipal
 from app.services.catalog_policy import VerifiedOffer, resolve_offer
 from app.services.policy import (
     PolicyDecision,
+    evaluate_customer_information,
     evaluate_handoff_request,
     evaluate_submit,
     mandate_allows,
@@ -165,7 +166,9 @@ class OnboardingService:
         id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
         nonce_factory: Callable[[], str] = lambda: secrets.token_urlsafe(32),
         handoff_ttl_seconds: int = 600,
+        customer_information_required: bool = False,
     ) -> None:
+        self._information_required = customer_information_required
         self._uow_factory = uow_factory
         self._apps = applications
         self._catalog = catalog
@@ -496,6 +499,22 @@ class OnboardingService:
                 or self._approved_action(application, offer).digest() != handoff.action_digest
             ):
                 raise deny(ActionDigestMismatchError(), "action_no_longer_current")
+            information = self._customer_information(uow, application)
+            if not information.allowed:
+                raise self._deny(
+                    uow,
+                    PrerequisitesNotMetError(),
+                    event_type="handoff.rejected",
+                    actor_type=AuditActorType.CUSTOMER,
+                    actor_id=customer_id,
+                    application_id=application.application_id,
+                    correlation_id=correlation_id,
+                    details={
+                        "handoff_id": handoff_id,
+                        "reason": "customer_information_incomplete",
+                        "missing": list(information.missing),
+                    },
+                )
             if not uow.handoffs.consume(handoff_id, customer_id, now):
                 raise deny(HandoffNotActiveError(), "lost_race_or_reused")
 
@@ -564,11 +583,38 @@ class OnboardingService:
                         "terms_digest": action.terms_digest,
                         "channel_kind": offer.channel.kind.value,
                         "partner_id": offer.channel.partner_id,
+                        **self._information_evidence(uow, application.application_id),
                     },
                 )
             )
             uow.commit()
         return self.advance_checks(application.application_id, correlation_id)
+
+    def _customer_information(
+        self, uow: UnitOfWork, application: DepotApplication
+    ) -> PolicyDecision:
+        """The policy gate for what the customer supplies on the bank's page, if it is required."""
+        if not self._information_required:
+            return PolicyDecision()
+        information = uow.customer_information
+        return evaluate_customer_information(
+            application=application,
+            tax=information.get_tax(application.application_id),
+            assessment=information.get_assessment(application.application_id),
+        )
+
+    def _information_evidence(self, uow: UnitOfWork, application_id: str) -> dict[str, Any]:
+        """Fixed with the consent, for the audit trail. Statuses and outcome, never a tax value."""
+        if not self._information_required:
+            return {}
+        tax = uow.customer_information.get_tax(application_id)
+        assessment = uow.customer_information.get_assessment(application_id)
+        return {
+            "tax_information": "LOCALLY_VALIDATED" if tax else "MISSING",
+            "tax_external_verification": tax.external_verification if tax else "NOT_IMPLEMENTED",
+            "appropriateness_outcome": assessment.outcome if assessment else "MISSING",
+            "appropriateness_acknowledged": bool(assessment and assessment.acknowledged_at),
+        }
 
     # --- 3. deterministic bank-side checks (MOCK providers) ----------------------------------
 
@@ -899,6 +945,8 @@ class OnboardingService:
                 # live catalog no longer offers exactly that (changed terms, expired manifest,
                 # ended partnership), the old approval cannot be used to submit.
                 decision = PolicyDecision(("approved_action_current",))
+            if decision.allowed:
+                decision = self._customer_information(uow, application)
             if not decision.allowed:
                 # The precise reason is audited; the agent only gets a generic refusal.
                 raise self._deny(
@@ -922,7 +970,7 @@ class OnboardingService:
                     actor_id=None,
                     application_id=application_id,
                     correlation_id=correlation_id,
-                    details={"missing": ["provider_accepted"]},
+                    details={"missing": ["provider_accepted"], **submission.audit_details()},
                 )
             try:
                 uow.depot_submissions.add(
@@ -949,7 +997,11 @@ class OnboardingService:
                         actor_id=actor_id,
                         outcome=AuditOutcome.SUCCESS,
                         application_id=application_id,
-                        details={"provider_ref": submission.provider_ref, "mock": submission.mock},
+                        details={
+                            "provider_ref": submission.provider_ref,
+                            "mock": submission.mock,
+                            **submission.audit_details(),
+                        },
                     )
                 )
                 uow.commit()

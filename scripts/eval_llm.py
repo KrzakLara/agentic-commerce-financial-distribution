@@ -266,6 +266,7 @@ def prepared_bank(scenario: Scenario) -> Iterator[Prepared]:
         environment=Environment.TEST,
         database_url=f"sqlite:///{(workdir / 'eval.db').as_posix()}",
         mock_provider_callback_secret=SecretStr(PROVIDER_SECRET),
+        customer_information_required=False,  # the 20 fixed cases predate this customer step
     )
     container = build_default_container(settings)
     clock = FakeClock()

@@ -4,29 +4,39 @@ Limited source governance over STRUCTURED claims. A claim is approved only if it
 verified catalog's value and it cites the catalog's own source for that value. Anything else is
 unsupported or goes to a person, with a fixed safe answer.
 
-Not covered: free-form model language. Nothing routes the agent's text through this check at
-runtime (`app/agents/llm.py` is unchanged and its digest is recorded evidence), and the wording
-filter below catches listed phrases, not every way to say something. No model is involved here,
-and catalog text is compared as data, never followed.
+In the journey: `approved_claims` builds what the bank states about a product, and every entry
+passes `validate_claim` first. It is served at
+``GET /v1/providers/{id}/products/{id}/approved-claims``, and the agent tool `get_official_product`
+carries the structured kinds to the agent. ``POST /v1/claims/verify`` lets any client check a
+structured claim.
+
+Not covered: free-form model language. Nothing routes the LLM agent's own text through this check
+(`app/agents/llm.py` is unchanged and its digest is recorded evidence), and the wording filter below
+catches listed phrases, not every way to say something. The bank controls what it publishes and
+signs, not what a customer's personal agent then writes. No model is involved here, and catalog text
+is compared as data, never followed.
 """
 
 import re
+from collections.abc import Iterator, Sequence
 from enum import StrEnum
 
 from app.core.exceptions import AppError
 from app.domain.base import DomainModel, OpaqueId
-from app.domain.catalog import Channel, Product, Provider
+from app.domain.catalog import Channel, Product, Provider, SourceReference
 from app.integrations.ports import ProviderDiscoveryPort
 
 SAFE_RESPONSE = (
-    "I can't confirm that from the bank's approved information. A member of the bank's staff can "
-    "help you with this."
+    "I can't confirm that from the bank's approved information. You can ask for a person on the "
+    "bank's customer page."
 )
 MANIFEST_SOURCE = "provider-manifest"
 
 _OVERPROMISE = re.compile(
     r"\b(guarantee[ds]?|risk[- ]free|no risk|cannot lose|can't lose|safe investment|"
-    r"recommend(ed|s)?|you should (buy|invest)|best (fund|product|choice)|right for you)\b",
+    r"recommend(ed|s)?|you should (buy|invest)|best (fund|product|choice)|right for you|"
+    r"will (definitely |certainly |surely )?(approve|be approved|accept|open)|"
+    r"definitely (approve|be approved|accept|open))\b",
     re.IGNORECASE,
 )
 _INSTRUCTION = re.compile(
@@ -184,3 +194,132 @@ def validate_claim(catalog: ProviderDiscoveryPort, claim: Claim) -> ClaimVerdict
     if product is None:
         return _escalate("information_missing")
     return _check_product_claim(claim, product)
+
+
+class ApprovedClaim(DomainModel):
+    """The narrow contract of a bank-approved fact: value, source, version. Nothing else."""
+
+    kind: ClaimKind
+    provider_id: str
+    product_id: str | None = None
+    product_version: str | None = None
+    subject: str | None = None
+    value: str
+    statement: str
+    source: SourceCitation
+    decision: ClaimDecision = ClaimDecision.APPROVED
+    mock: bool = True
+
+
+def _citation(source: SourceReference) -> SourceCitation:
+    return SourceCitation(
+        document_id=source.document_id,
+        document_version=source.document_version,
+        document_digest=source.document_digest,
+    )
+
+
+def _candidates(
+    provider: Provider, product: Product, channels: Sequence[Channel]
+) -> Iterator[tuple[Claim, str]]:
+    """Every statement the bank can make about this product, from its verified catalog only."""
+    identifiers = {"provider_id": provider.provider_id, "product_id": product.product_id}
+    identity = provider_identity_text(provider)
+    yield (
+        Claim(
+            kind=ClaimKind.PROVIDER_IDENTITY,
+            provider_id=provider.provider_id,
+            text=identity,
+            source=manifest_citation(provider),
+        ),
+        f"The verified provider is {identity}, according to its verified manifest "
+        f"version {provider.manifest_version}.",
+    )
+    for channel in channels:
+        if channel.partner_name is None or not channel.serves(product.product_id):
+            continue
+        yield (
+            Claim(
+                kind=ClaimKind.PARTNER_ATTRIBUTION,
+                provider_id=provider.provider_id,
+                subject=channel.channel_id,
+                text=channel.partner_name,
+                source=manifest_citation(provider),
+            ),
+            f"{channel.partner_name} is a registered distribution partner on channel "
+            f"{channel.channel_id}, according to the verified register.",
+        )
+    risk = _approved_sources(ClaimKind.RISK_SUMMARY, product)[0]
+    if product.risk_summary:
+        yield (
+            Claim(
+                kind=ClaimKind.RISK_SUMMARY,
+                text=product.risk_summary,
+                source=risk,
+                **identifiers,
+            ),
+            f"According to the verified document {risk.document_id} version "
+            f"{risk.document_version}: {product.risk_summary}",
+        )
+    if not product.sources:
+        return  # no source to cite: nothing below may be stated
+    source = _citation(product.sources[0])
+    for fee in product.fees:
+        yield (
+            Claim(
+                kind=ClaimKind.FEE,
+                subject=fee.code,
+                text=fee.amount,
+                source=source,
+                **identifiers,
+            ),
+            f"According to the verified synthetic price list {source.document_id} version "
+            f"{source.document_version}, the {fee.code} fee of {product.product_id} is "
+            f"{fee.amount}",
+        )
+    if product.conditions:
+        yield (
+            Claim(
+                kind=ClaimKind.CONDITIONS,
+                text=product.conditions,
+                source=source,
+                **identifiers,
+            ),
+            f"According to the verified document {source.document_id} version "
+            f"{source.document_version}: {product.conditions}",
+        )
+
+
+def approved_claims(
+    catalog: ProviderDiscoveryPort, provider_id: str, product_id: str
+) -> list[ApprovedClaim]:
+    """What the bank may state about this product. Each entry passed `validate_claim`.
+
+    A catalog value the check refuses (instruction-like text, for example) is simply absent, so an
+    agent has nothing to repeat. Unknown provider or product: an empty list, never a guess.
+    """
+    try:
+        provider = catalog.get_provider(provider_id)
+        product = next(
+            (p for p in catalog.list_products(provider_id) if p.product_id == product_id), None
+        )
+        channels = list(catalog.list_channels(provider_id))
+    except AppError:
+        return []
+    if product is None:
+        return []
+    return [
+        ApprovedClaim(
+            kind=claim.kind,
+            provider_id=provider.provider_id,
+            product_id=claim.product_id,
+            product_version=product.catalog_version,
+            subject=claim.subject,
+            value=claim.text,
+            statement=statement,
+            source=claim.source,
+            mock=provider.is_mock,
+        )
+        for claim, statement in _candidates(provider, product, channels)
+        if claim.source is not None and validate_claim(catalog, claim).approved
+    ]

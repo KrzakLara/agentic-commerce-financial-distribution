@@ -371,6 +371,10 @@ def test_only_the_expected_endpoints_exist(app: FastAPI) -> None:
         "/v1/applications/{application_id}/submit": ["post"],
         "/v1/customer/handoffs/{handoff_id}/confirm": ["post"],
         "/v1/customer/applications/{application_id}/request-human": ["post"],
+        "/v1/customer/handoffs/{handoff_id}/tax-information": ["post"],
+        "/v1/customer/handoffs/{handoff_id}/appropriateness": ["post"],
+        "/v1/providers/{provider_id}/products/{product_id}/approved-claims": ["get"],
+        "/v1/claims/verify": ["post"],
     }
     # The provider callback and the HTML pages exist but are not part of the public contract.
     assert not any(p.startswith(("/internal", "/customer")) for p in paths)

@@ -1,4 +1,4 @@
-# Database (Phase 01 - Phase 04)
+# Database (Phase 01 - final integration)
 
 SQLite via SQLAlchemy 2.x. Default URL `sqlite:///./trusteq.db` (git-ignored). The schema is
 created at application startup (`init_database`) and stamped with `PRAGMA user_version`
@@ -218,3 +218,18 @@ table is dropped. The receipt columns are added with `ALTER TABLE ... ADD COLUMN
 trigger is created for the existing table. An interrupted upgrade resumes on the next start;
 running it twice is harmless. Tested against `tests/fixtures/schema_v3.sql` (the exact Phase 03
 DDL) in `tests/test_schema_migration_v4.py`, including a Phase 03 approval that still submits.
+
+## Final integration: customer information (schema version 5)
+
+Two new tables, one row per application, both with a foreign key to `applications`. No existing table changes, so the
+upgrade from version 4 only adds them through `create_all`.
+
+* **`tax_information`:** source, country, US-person declaration, exemption amount, church-tax objection, field
+  statuses, `external_verification` (always `NOT_IMPLEMENTED`), time. **There is no column for the tax identifier:** it is
+  validated and discarded. A refused attempt writes nothing here.
+* **`appropriateness_assessments`:** product level, outcome, reasons, the answers, rule-set version, acknowledgement time,
+  time. New answers replace the row and clear the acknowledgement.
+
+History is in `audit_events`: `customer_information.tax_validated` (field statuses only),
+`customer_information.assessment_recorded`, `customer_information.assessment_acknowledged` and
+`customer_information.rejected`. `handoff.confirmed` adds the outcome that was fixed with the consent.

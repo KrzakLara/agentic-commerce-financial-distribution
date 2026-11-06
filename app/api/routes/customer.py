@@ -7,9 +7,12 @@
 * ``POST /v1/customer/applications/{id}/request-human`` - the customer asks for a person
   (Phase 04): requires the customer's SERVER-SIDE session (cookie ``trusteq_customer_api``) and
   its CSRF token (``X-CSRF-Token``); the self-asserted DEV header is not accepted here.
+* ``POST /v1/customer/handoffs/{id}/tax-information`` and ``.../appropriateness`` - what the
+  customer supplies before confirming, with the same session, CSRF and one-time challenge.
 * ``/customer/...`` - the minimal HTML pages a customer actually sees (not part of the OpenAPI
   contract), with a server-side session and CSRF tokens (Phase 03), including the "Speak to a
-  person" button (``POST /customer/applications/{id}/request-human``, Phase 04).
+  person" button (``POST /customer/applications/{id}/request-human``, Phase 04) and the tax and
+  assessment forms (``POST /customer/handoffs/{id}/tax`` and ``.../assessment``).
 
 None of these routes accepts an agent credential: a request carrying an ``Authorization``
 header is refused (and audited), whatever else it carries. Possessing the handoff link (or its
@@ -17,6 +20,7 @@ nonce) is never authentication: the page shows nothing until the customer is sig
 """
 
 import re
+from collections.abc import Mapping
 from typing import Annotated
 from urllib.parse import parse_qs
 
@@ -43,14 +47,22 @@ from app.api.deps import (
     AuthorizationServiceDep,
     ContainerDep,
     CorrelationIdDep,
+    CustomerInformationServiceDep,
     CustomerSessionServiceDep,
     OnboardingServiceDep,
     ReviewServiceDep,
     SettingsDep,
 )
+from app.api.schemas.customer_information import (
+    AssessmentBody,
+    AssessmentResponse,
+    TaxInformationBody,
+    TaxInformationResponse,
+)
 from app.api.schemas.errors import ErrorResponse
 from app.api.schemas.handoffs import HandoffConfirmRequest, HandoffConfirmResponse
 from app.api.schemas.review import HumanRequestBody, HumanRequestResponse
+from app.container import AppContainer
 from app.core.config import Settings
 from app.core.exceptions import (
     AppError,
@@ -60,7 +72,9 @@ from app.core.exceptions import (
 )
 from app.domain.enums import AuditActorType, HumanRequestCategory
 from app.domain.visibility import to_agent_visible_state
+from app.services.appropriateness import PROTOTYPE_NOTICE, ExperienceBand, customer_notice_for
 from app.services.authorization_service import AuthorizationService
+from app.services.customer_information_service import CustomerInformationService
 from app.services.customer_session_service import (
     CustomerSessionService,
     csrf_matches,
@@ -82,6 +96,8 @@ _MAX_FORM_BYTES = 4096
 CSRF_CONFIRM = "confirm"
 CSRF_LOGIN = "login"
 CSRF_HUMAN = "human"  # bound to (session, application)
+CSRF_TAX = "tax"  # bound to (session, handoff)
+CSRF_ASSESSMENT = "assessment"  # bound to (session, handoff)
 
 
 def _presented_agent_id(request: Request, authorization: AuthorizationService) -> str | None:
@@ -284,6 +300,196 @@ def request_human(
     return HumanRequestResponse(application_id=ack.application_id, message=ack.message)
 
 
+def _customer_for_handoff(
+    request: Request,
+    handoff_id: str,
+    *,
+    settings: Settings,
+    sessions: CustomerSessionService,
+    service: OnboardingService,
+    authorization: AuthorizationService,
+    correlation_id: str,
+    cookie: str,
+    scope: str,
+    presented_csrf: str | None,
+) -> CustomerContext:
+    """The ONE gate of the tax and assessment routes, in the order of the confirmation's checks.
+
+    No agent credential; not a cross-site browser request; an ACTIVE server-side customer session;
+    a CSRF token bound to this session, this handoff and this purpose. Whether the handoff is live
+    and belongs to this customer is decided next, by the service, with the one-time challenge.
+    """
+    if agent_credentials_presented(request):
+        _refuse_agent_credentials(request, handoff_id, service, authorization, correlation_id)
+        raise AuthenticationRequiredError()
+    if _cross_site(request):
+        raise CrossSiteRequestError()
+    customer = session_customer(request, settings, sessions, cookie)
+    if customer is None or customer.session_secret is None:
+        raise AuthenticationRequiredError()
+    if not csrf_matches(customer.session_secret, scope, handoff_id, presented_csrf):
+        service.record_customer_channel_denial(
+            handoff_id=handoff_id,
+            actor_type=AuditActorType.CUSTOMER,
+            actor_id=customer.customer_id,
+            reason="csrf_token_invalid",
+            correlation_id=correlation_id,
+        )
+        raise CsrfTokenInvalidError()
+    return customer
+
+
+@router.post(
+    "/v1/customer/handoffs/{handoff_id}/tax-information",
+    response_model=TaxInformationResponse,
+    summary="Customer supplies synthetic tax information (bank-controlled customer channel)",
+    description=(
+        "Requires the customer's server-side session (cookie `trusteq_customer_api`), the "
+        "session's CSRF token for this handoff in `X-CSRF-Token` and the one-time `nonce`. Agent "
+        "credentials are refused and audited. Validation is local and deterministic: the answer "
+        "says which fields are collected, missing or invalid and never echoes a value. Nothing "
+        "is checked with a tax authority. Synthetic data only: a real tax ID is refused."
+    ),
+    responses={
+        401: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        410: {"model": ErrorResponse},
+    },
+)
+def submit_tax_information(
+    handoff_id: HandoffId,
+    body: TaxInformationBody,
+    request: Request,
+    response: Response,
+    settings: SettingsDep,
+    service: OnboardingServiceDep,
+    sessions: CustomerSessionServiceDep,
+    authorization: AuthorizationServiceDep,
+    information: CustomerInformationServiceDep,
+    correlation_id: CorrelationIdDep,
+    csrf_header: Annotated[
+        str | None,
+        Header(alias=CSRF_HEADER, description="The session's CSRF token for this handoff."),
+    ] = None,
+) -> TaxInformationResponse:
+    customer = _customer_for_handoff(
+        request,
+        handoff_id,
+        settings=settings,
+        sessions=sessions,
+        service=service,
+        authorization=authorization,
+        correlation_id=correlation_id,
+        cookie=API_SESSION_COOKIE,
+        scope=CSRF_TAX,
+        presented_csrf=csrf_header,
+    )
+    result = information.submit_tax(
+        customer_id=customer.customer_id,
+        handoff_id=handoff_id,
+        nonce=body.nonce,
+        submitted=body.model_dump(exclude={"nonce"}),
+        correlation_id=correlation_id,
+    )
+    application = service.review_handoff(
+        customer_id=customer.customer_id,
+        handoff_id=handoff_id,
+        nonce=body.nonce,
+        correlation_id=correlation_id,
+    ).application
+    response.headers["Cache-Control"] = "no-store"
+    return TaxInformationResponse(
+        application_id=application.application_id,
+        complete=result.complete,
+        field_statuses={name: status.value for name, status in result.statuses.items()},
+        data_source=result.source.value,
+        local_validation="COMPLETE" if result.complete else "INCOMPLETE",
+        ready_for_confirmation=information.status(application).ready,
+    )
+
+
+@router.post(
+    "/v1/customer/handoffs/{handoff_id}/appropriateness",
+    response_model=AssessmentResponse,
+    summary="Customer answers the synthetic knowledge-and-experience questions",
+    description=(
+        "Same customer-channel requirements as the tax information. `intent=answer` records the "
+        "deterministic result of the answers; `intent=acknowledge` records that the customer read "
+        "a warning or the missing-answers notice and wants to continue. No result stops the "
+        "account opening. A prototype demonstration with synthetic data: not legally complete "
+        "compliance, not advice and not a suitability assessment."
+    ),
+    responses={
+        401: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        410: {"model": ErrorResponse},
+    },
+)
+def submit_assessment(
+    handoff_id: HandoffId,
+    body: AssessmentBody,
+    request: Request,
+    response: Response,
+    settings: SettingsDep,
+    service: OnboardingServiceDep,
+    sessions: CustomerSessionServiceDep,
+    authorization: AuthorizationServiceDep,
+    information: CustomerInformationServiceDep,
+    correlation_id: CorrelationIdDep,
+    csrf_header: Annotated[
+        str | None,
+        Header(alias=CSRF_HEADER, description="The session's CSRF token for this handoff."),
+    ] = None,
+) -> AssessmentResponse:
+    customer = _customer_for_handoff(
+        request,
+        handoff_id,
+        settings=settings,
+        sessions=sessions,
+        service=service,
+        authorization=authorization,
+        correlation_id=correlation_id,
+        cookie=API_SESSION_COOKIE,
+        scope=CSRF_ASSESSMENT,
+        presented_csrf=csrf_header,
+    )
+    if body.intent == "acknowledge":
+        record = information.acknowledge_assessment(
+            customer_id=customer.customer_id,
+            handoff_id=handoff_id,
+            nonce=body.nonce,
+            correlation_id=correlation_id,
+        )
+    else:
+        record = information.submit_assessment(
+            customer_id=customer.customer_id,
+            handoff_id=handoff_id,
+            nonce=body.nonce,
+            knows_capital_loss=body.knows_capital_loss,
+            knows_no_guarantee=body.knows_no_guarantee,
+            experience=body.experience,
+            correlation_id=correlation_id,
+        )
+    application = service.review_handoff(
+        customer_id=customer.customer_id,
+        handoff_id=handoff_id,
+        nonce=body.nonce,
+        correlation_id=correlation_id,
+    ).application
+    response.headers["Cache-Control"] = "no-store"
+    return AssessmentResponse(
+        application_id=record.application_id,
+        outcome=record.outcome,
+        customer_notice=customer_notice_for(record.outcome),
+        acknowledged=record.acknowledged_at is not None,
+        rule_set_version=record.rule_set_version,
+        ready_for_confirmation=information.status(application).ready,
+        notice=PROTOTYPE_NOTICE,
+    )
+
+
 # --- HTML pages ---------------------------------------------------------------------------------
 
 
@@ -352,6 +558,7 @@ def handoff_page(
     service: OnboardingServiceDep,
     sessions: CustomerSessionServiceDep,
     authorization: AuthorizationServiceDep,
+    information: CustomerInformationServiceDep,
     correlation_id: CorrelationIdDep,
     token: str = "",
 ) -> HTMLResponse:
@@ -366,14 +573,33 @@ def handoff_page(
     if customer is None or customer.session_secret is None:
         return _sign_in_response(request, handoff_id, token)  # the link alone shows nothing
     try:
-        review = service.review_handoff(
-            customer_id=customer.customer_id,
-            handoff_id=handoff_id,
-            nonce=token,
-            correlation_id=correlation_id,
+        return _review_response(
+            customer, handoff_id, token, settings, container, service, information, correlation_id
         )
     except AppError as exc:
         return _error_page(exc, "Request cannot be shown")
+
+
+def _review_response(
+    customer: CustomerContext,
+    handoff_id: str,
+    token: str,
+    settings: Settings,
+    container: AppContainer,
+    service: OnboardingService,
+    information: CustomerInformationService,
+    correlation_id: str,
+    tax_statuses: Mapping[str, str] | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    """The review page. `tax_statuses`: the field results of a tax form that was just refused."""
+    secret = customer.session_secret or ""
+    review = service.review_handoff(
+        customer_id=customer.customer_id,
+        handoff_id=handoff_id,
+        nonce=token,
+        correlation_id=correlation_id,
+    )
     action = review.handoff.action
     provider = container.catalog.get_provider(action.provider_id)
     product = next(
@@ -386,6 +612,19 @@ def handoff_page(
         for c in container.catalog.list_channels(action.provider_id)
         if c.channel_id == action.channel_id
     )
+    panel = None
+    if settings.customer_information_required:
+        current = information.status(review.application)
+        panel = pages.InformationPanel(
+            handoff_id=handoff_id,
+            token=token,
+            tax_csrf=csrf_token(secret, CSRF_TAX, handoff_id),
+            assessment_csrf=csrf_token(secret, CSRF_ASSESSMENT, handoff_id),
+            tax_record=current.tax,
+            assessment=current.assessment,
+            ready=current.ready,
+            tax_statuses=tax_statuses,
+        )
     return pages.html_response(
         pages.review_page(
             review=review,
@@ -394,11 +633,13 @@ def handoff_page(
             provider_name=provider.legal_name,
             product_name=product.name,
             channel_label=channel.label,
-            csrf_token=csrf_token(customer.session_secret, CSRF_CONFIRM, handoff_id),
+            csrf_token=csrf_token(secret, CSRF_CONFIRM, handoff_id),
             product=product,
             channel=channel,
-            human_csrf_token=csrf_token(customer.session_secret, CSRF_HUMAN, action.application_id),
-        )
+            human_csrf_token=csrf_token(secret, CSRF_HUMAN, action.application_id),
+            information=panel,
+        ),
+        status_code,
     )
 
 
@@ -500,8 +741,9 @@ async def confirm_handoff_form(
         return _error_page(exc, "Confirmation failed")
     page = pages.result_page(
         "Confirmation recorded",
-        f"Thank you. Your confirmation for application {application.application_id} was "
-        "recorded. The mandatory checks (MOCK) have run; the agent can now continue.",
+        f"Your authorization for application {application.application_id} has been recorded. "
+        "Further processing is subject to the bank's required checks. "
+        "Your account is not open yet.",
         ok=True,
         human_request=(
             application.application_id,
@@ -510,6 +752,153 @@ async def confirm_handoff_form(
         step=pages.STEP_CONFIRMED,
     )
     return pages.html_response(page, 200)
+
+
+def _yes_no(value: str) -> object:
+    """A form's yes or no. Anything else stays as it is, so that validation calls it invalid."""
+    return {"yes": True, "no": False}.get(value, value)
+
+
+def _tax_fields(form: Mapping[str, str]) -> dict[str, object]:
+    amount = form.get("exemption_order_amount_eur", "").strip()
+    return {
+        "tax_residency_country": form.get("tax_residency_country", "").strip(),
+        "synthetic_tax_id": form.get("synthetic_tax_id", "").strip(),
+        "us_person_declared": _yes_no(form.get("us_person_declared", "")),
+        "exemption_order_amount_eur": int(amount)
+        if amount.isascii() and amount.isdigit()
+        else amount,
+        "church_tax_objection": _yes_no(form.get("church_tax_objection", "")),
+    }
+
+
+def _reviewed_page_redirect(handoff_id: str, token: str, anchor: str) -> RedirectResponse:
+    return RedirectResponse(
+        f"/customer/handoffs/{handoff_id}?token={token}#{anchor}",
+        status_code=status.HTTP_303_SEE_OTHER,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/customer/handoffs/{handoff_id}/tax", include_in_schema=False, response_model=None)
+async def tax_form(
+    handoff_id: HandoffId,
+    request: Request,
+    settings: SettingsDep,
+    container: ContainerDep,
+    service: OnboardingServiceDep,
+    sessions: CustomerSessionServiceDep,
+    authorization: AuthorizationServiceDep,
+    information: CustomerInformationServiceDep,
+    correlation_id: CorrelationIdDep,
+) -> HTMLResponse | RedirectResponse:
+    """A complete form goes back to the page. A refused one shows the field statuses, no values."""
+    form = await _read_form(request)
+    token = form.get("token", "")
+    if not _TOKEN.fullmatch(token):
+        return _page("Rejected", "Invalid request.", 400)
+
+    def run() -> HTMLResponse | RedirectResponse:
+        customer = _customer_for_handoff(
+            request,
+            handoff_id,
+            settings=settings,
+            sessions=sessions,
+            service=service,
+            authorization=authorization,
+            correlation_id=correlation_id,
+            cookie=SESSION_COOKIE,
+            scope=CSRF_TAX,
+            presented_csrf=form.get("csrf_token"),
+        )
+        result = information.submit_tax(
+            customer_id=customer.customer_id,
+            handoff_id=handoff_id,
+            nonce=token,
+            submitted=_tax_fields(form),
+            correlation_id=correlation_id,
+        )
+        if result.complete:
+            return _reviewed_page_redirect(handoff_id, token, pages.ANCHOR_TAX)
+        statuses = {name: status.value for name, status in result.statuses.items()}
+        return _review_response(
+            customer, handoff_id, token, settings, container, service, information,
+            correlation_id, tax_statuses=statuses, status_code=422,
+        )  # fmt: skip
+
+    try:
+        return await run_in_threadpool(run)
+    except AppError as exc:
+        return _error_page(exc, "Request refused")
+
+
+def _assessment_answer(value: str) -> bool | None:
+    """Unanswered is a valid answer. Anything but true or false is a tampered form."""
+    if value == "":
+        return None
+    answers = {"true": True, "false": False}
+    if value not in answers:
+        raise ValueError(value)
+    return answers[value]
+
+
+@router.post(
+    "/customer/handoffs/{handoff_id}/assessment", include_in_schema=False, response_model=None
+)
+async def assessment_form(
+    handoff_id: HandoffId,
+    request: Request,
+    settings: SettingsDep,
+    service: OnboardingServiceDep,
+    sessions: CustomerSessionServiceDep,
+    authorization: AuthorizationServiceDep,
+    information: CustomerInformationServiceDep,
+    correlation_id: CorrelationIdDep,
+) -> HTMLResponse | RedirectResponse:
+    form = await _read_form(request)
+    token = form.get("token", "")
+    if not _TOKEN.fullmatch(token):
+        return _page("Rejected", "Invalid request.", 400)
+
+    def run() -> RedirectResponse:
+        customer = _customer_for_handoff(
+            request,
+            handoff_id,
+            settings=settings,
+            sessions=sessions,
+            service=service,
+            authorization=authorization,
+            correlation_id=correlation_id,
+            cookie=SESSION_COOKIE,
+            scope=CSRF_ASSESSMENT,
+            presented_csrf=form.get("csrf_token"),
+        )
+        if form.get("intent") == "acknowledge":
+            information.acknowledge_assessment(
+                customer_id=customer.customer_id,
+                handoff_id=handoff_id,
+                nonce=token,
+                correlation_id=correlation_id,
+            )
+        else:
+            experience = form.get("experience", "")
+            information.submit_assessment(
+                customer_id=customer.customer_id,
+                handoff_id=handoff_id,
+                nonce=token,
+                knows_capital_loss=_assessment_answer(form.get("knows_capital_loss", "")),
+                knows_no_guarantee=_assessment_answer(form.get("knows_no_guarantee", "")),
+                experience=ExperienceBand(experience) if experience else None,
+                correlation_id=correlation_id,
+            )
+        return _reviewed_page_redirect(handoff_id, token, pages.ANCHOR_KNOWLEDGE)
+
+    try:
+        return await run_in_threadpool(run)
+    except AppError as exc:
+        return _error_page(exc, "Request refused")
+    except ValueError:
+        return _page("Rejected", "Invalid request.", 400)
 
 
 @router.post("/customer/applications/{application_id}/request-human", include_in_schema=False)

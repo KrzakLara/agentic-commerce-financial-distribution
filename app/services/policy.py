@@ -10,11 +10,13 @@ from datetime import datetime
 
 from app.domain.application import DepotApplication
 from app.domain.checks import CheckRecord
+from app.domain.customer_information import AppropriatenessRecord, TaxInformationRecord
 from app.domain.enums import ApplicationStatus as S
 from app.domain.enums import CheckOutcome, CheckType, MandateScope
 from app.domain.handoff import Handoff
 from app.domain.mandate import Mandate
 from app.domain.receipts import ConsentReceipt, DisclosureReceipt
+from app.services.appropriateness import AppropriatenessOutcome
 
 HANDOFF_ALLOWED_STATES = frozenset({S.DRAFT, S.AWAITING_AUTHORIZATION})
 
@@ -49,6 +51,31 @@ def evaluate_handoff_request(
         missing.append("mandate_inactive")
     if application.status not in HANDOFF_ALLOWED_STATES:
         missing.append("state_not_eligible_for_handoff")
+    return PolicyDecision(tuple(missing))
+
+
+def evaluate_customer_information(
+    *,
+    application: DepotApplication,
+    tax: TaxInformationRecord | None,
+    assessment: AppropriatenessRecord | None,
+) -> PolicyDecision:
+    """Is what the customer had to supply on the bank's page there, and is it theirs?
+
+    The assessment's RESULT never blocks: a warning or missing answers need the customer's
+    acknowledgement and nothing else, so no outcome leads to a refusal (ADR section 05).
+    """
+    customer = application.customer_ref
+    missing: list[str] = []
+    if tax is None or tax.customer_id != customer:
+        missing.append("tax_information")
+    if assessment is None or assessment.customer_id != customer:
+        missing.append("appropriateness_assessment")
+    elif (
+        assessment.outcome != AppropriatenessOutcome.ASSESSMENT_OK.value
+        and assessment.acknowledged_at is None
+    ):
+        missing.append("appropriateness_acknowledgement")
     return PolicyDecision(tuple(missing))
 
 

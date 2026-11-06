@@ -1,15 +1,15 @@
-"""Standalone MOCK of onboarding tax information: a typed contract and deterministic validation.
+"""MOCK of onboarding tax information: a typed contract and deterministic validation.
 
 SYNTHETIC data only: the identifier format below is invented, so a value shaped like a real
-German tax ID (11 digits) fails validation. There is no connection to any tax authority. The
-field list is what this prototype models, not a statement of what the law requires. It is not
-called by the frozen onboarding flow.
+German tax ID (11 digits) fails validation. There is no connection to any tax authority, so a
+"complete" result means well-formed customer input, not verified tax data. The field list is what
+this prototype models, not a statement of what the law requires.
 
-Intended integration point: collected by the customer on the bank's own page, after the sign-in
-and before the KYC step, with the status summary as evidence for the policy gate. The agent has no
-tool for it, so tax data never enters model traffic. Anything an agent or a model supplies is
-never authoritative. Audit records get the status summary from `audit_details`, never the
-identifier.
+Used by `app.services.customer_information_service`: collected by the customer on the bank's own
+page, after the sign-in and before the confirmation, with the stored result as evidence for the
+policy gate. The agent has no tool for it, so tax data never enters model traffic. Anything an agent
+or a model supplies is never authoritative. Audit records get the status summary from
+`audit_details`, never the identifier.
 """
 
 import re

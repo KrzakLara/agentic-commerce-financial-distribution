@@ -203,3 +203,25 @@ sets `OPENED`.
   {"application_id": "app-...", "status": "RECEIVED",
    "message": "Your request to speak with a person has been recorded. ..."}
   ```
+
+## Final integration additions
+
+Details and limits: [final-integration.md](final-integration.md).
+
+* **`POST /v1/customer/handoffs/{id}/tax-information`** (customer: session cookie, `X-CSRF-Token` for this
+  handoff, one-time `nonce`). Body: `tax_residency_country`, `synthetic_tax_id`, `us_person_declared`,
+  `exemption_order_amount_eur`, `church_tax_objection`. Unknown fields: 422. Answer: `complete`, `field_statuses`
+  (`COLLECTED`, `MISSING`, `INVALID`, `NOT_PROVIDED_OPTIONAL`), `data_source`, `local_validation`,
+  `external_verification: NOT_IMPLEMENTED`, `ready_for_confirmation`. No value is ever echoed.
+* **`POST /v1/customer/handoffs/{id}/appropriateness`** (same requirements). `intent=answer` with
+  `knows_capital_loss`, `knows_no_guarantee`, `experience`; `intent=acknowledge` for a warning or a notice. Answer:
+  `outcome`, `customer_notice`, `acknowledged`, `rule_set_version`, `ready_for_confirmation`, `notice`.
+* **Confirmation** is refused with `409 prerequisites_not_met` (audited reason `customer_information_incomplete`) while
+  the information is missing, unless `TRUSTEQ_CUSTOMER_INFORMATION_REQUIRED=false`. **Submit** checks it again.
+* **`GET /v1/providers/{id}/products/{id}/approved-claims`** (public): bank-approved facts with `kind`, `value`,
+  `statement`, `source` (document, version, digest), `product_version`. 404 for an unknown product, 503 outside the manifest's
+  validity window.
+* **`POST /v1/claims/verify`** (public, stores nothing): `decision` is `APPROVED`, `UNSUPPORTED` or `ESCALATE_TO_HUMAN`,
+  with `reason` and `safe_response`. It does not check text a third-party agent writes unless that agent submits it.
+* The tool result of **`get_official_product`** adds `approved_claims`, with the structured kinds only.
+* **Submit:** the audit event adds `contract_version` and, where it applies, `fallback_from` or `refusal`.

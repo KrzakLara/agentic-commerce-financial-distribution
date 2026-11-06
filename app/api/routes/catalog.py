@@ -5,11 +5,26 @@ from typing import Annotated
 from fastapi import APIRouter, Path, Query
 
 from app.api.deps import ContainerDep
-from app.api.schemas.catalog import ProductListResponse, ProductView, ProviderManifestResponse
+from app.api.schemas.catalog import (
+    ApprovedClaimsResponse,
+    ClaimVerificationRequest,
+    ClaimVerificationResponse,
+    ProductListResponse,
+    ProductView,
+    ProviderManifestResponse,
+)
 from app.api.schemas.errors import ErrorResponse
 from app.container import AppContainer
-from app.core.exceptions import CatalogIntegrityError
+from app.core.exceptions import CatalogIntegrityError, NotFoundError
 from app.domain.catalog import Provider
+from app.services.bank_claims import (
+    SAFE_RESPONSE,
+    Claim,
+    ClaimDecision,
+    ClaimVerdict,
+    approved_claims,
+    validate_claim,
+)
 from app.services.catalog_policy import provider_is_current
 
 router = APIRouter(prefix="/v1", tags=["discovery"])
@@ -47,6 +62,59 @@ def provider_manifest(
         provider,
         list(container.catalog.list_channels(provider_id)),
         list(container.catalog.list_products(provider_id)),
+    )
+
+
+@router.get(
+    "/providers/{provider_id}/products/{product_id}/approved-claims",
+    response_model=ApprovedClaimsResponse,
+    summary="Bank-approved facts about a product, each with its source and version",
+    description=(
+        "Structured facts that passed the bank's deterministic claim check against the verified "
+        "catalog: fees, conditions, risk summary, provider identity and registered partners. A "
+        "fact the catalog does not contain is absent. This states what the bank approved; it "
+        "does not control what a customer's own agent writes. Not investment advice."
+    ),
+    responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+def product_approved_claims(
+    provider_id: Annotated[str, Path(min_length=1, max_length=64, pattern=_ID)],
+    product_id: Annotated[str, Path(min_length=1, max_length=64, pattern=_ID)],
+    container: ContainerDep,
+) -> ApprovedClaimsResponse:
+    _current_provider(container, provider_id)
+    if not any(p.product_id == product_id for p in container.catalog.list_products(provider_id)):
+        raise NotFoundError()
+    return ApprovedClaimsResponse(
+        claims=approved_claims(container.catalog, provider_id, product_id),
+    )
+
+
+@router.post(
+    "/claims/verify",
+    response_model=ClaimVerificationResponse,
+    summary="Check whether a structured claim may be presented as official bank information",
+    description=(
+        "Deterministic: the value must equal the verified catalog's value and cite its source. "
+        "Free text is never an official claim, and guarantees or personal recommendations go to "
+        "a person. Read-only, and nothing is stored."
+    ),
+)
+def verify_claim(
+    body: ClaimVerificationRequest, container: ContainerDep
+) -> ClaimVerificationResponse:
+    claim = Claim(**body.model_dump())
+    verdict = validate_claim(container.catalog, claim)
+    if verdict.approved:
+        provider = container.catalog.get_provider(claim.provider_id)
+        if not provider_is_current(provider, container.clock()):
+            verdict = ClaimVerdict(
+                decision=ClaimDecision.ESCALATE_TO_HUMAN,
+                reason="information_missing",
+                safe_response=SAFE_RESPONSE,
+            )
+    return ClaimVerificationResponse(
+        decision=verdict.decision, reason=verdict.reason, safe_response=verdict.safe_response
     )
 
 

@@ -16,7 +16,7 @@ fields are copied into the tool result - never a token.
 """
 
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
@@ -118,6 +118,36 @@ class _ProductView(_Lenient):
 
 class _ProductsView(_Lenient):
     products: list[_ProductView]
+
+
+class _CitationView(_Lenient):
+    document_id: OpaqueId
+    document_version: Annotated[str, StringConstraints(pattern=r"^[0-9A-Za-z.\-]{1,64}$")]
+    document_digest: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
+class _ApprovedClaimView(_Lenient):
+    """A bank-approved fact, as the agent may receive it. Bounded and allow-listed like the rest."""
+
+    kind: str
+    provider_id: str
+    product_id: str | None = None
+    product_version: str | None = None
+    subject: str | None = None
+    value: Annotated[str, StringConstraints(max_length=200)]
+    statement: Annotated[str, StringConstraints(max_length=400)]
+    source: _CitationView
+    decision: Literal["APPROVED"]
+    mock: bool
+
+
+class _ApprovedClaimsView(_Lenient):
+    claims: list[_ApprovedClaimView]
+
+
+# Structured values only. Narrative provider text (conditions, risk summary) stays out of model
+# traffic: the customer reads it on the bank's page, and the Phase 05 boundary above still holds.
+_CLAIM_KINDS_FOR_THE_AGENT = frozenset({"FEE", "PROVIDER_IDENTITY", "PARTNER_ATTRIBUTION"})
 
 
 class _ActionView(_Lenient):
@@ -239,8 +269,27 @@ class RestAgentToolGateway:
         if match is None:
             return AgentToolResult(tool=call.tool, status=AgentVisibleStatus.DENIED)
         return AgentToolResult(
-            tool=call.tool, status=AgentVisibleStatus.OK, data=match.model_dump()
+            tool=call.tool,
+            status=AgentVisibleStatus.OK,
+            data={**match.model_dump(), "approved_claims": self._approved_claims(args)},
         )
+
+    def _approved_claims(self, args: GetOfficialProductArgs) -> list[dict[str, Any]]:
+        """The bank's approved facts. If they cannot be read, none: nothing is ever made up."""
+        response = self._client.get(
+            f"/v1/providers/{args.provider_id}/products/{args.product_id}/approved-claims"
+        )
+        if response.status_code != 200:
+            return []
+        try:
+            claims = _ApprovedClaimsView.model_validate(response.json()).claims
+        except (ValidationError, ValueError):
+            return []
+        return [
+            claim.model_dump()
+            for claim in claims
+            if claim.kind in _CLAIM_KINDS_FOR_THE_AGENT and claim.provider_id == args.provider_id
+        ]
 
     def _tokens(self, application_id: str) -> ApplicationTokens | None:
         return self._credentials.for_application(application_id)

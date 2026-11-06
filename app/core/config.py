@@ -93,6 +93,24 @@ class Settings(BaseSettings):
     # default) disables the callback endpoint. Refused in production: the mock provider is a
     # prototype stand-in, not a trusted production counterparty.
     mock_provider_callback_secret: SecretStr | None = None
+    # How the MOCK depot provider's versioned API behaves (see `provider_contract.SCENARIOS`). An
+    # unknown value stops the application from starting.
+    mock_depot_scenario: str = "current_v2"
+
+    # The customer must supply tax information and answer the knowledge-and-experience questions
+    # on the bank's page before the bank accepts a confirmation. Off only for the three original
+    # P0 scenarios and their tests, which predate this step and say so.
+    customer_information_required: bool = True
+
+    # Who signs the customer in. `oidc` is a boundary only: no identity provider is configured for
+    # this project, so that mode switches the DEV sign-in off and every customer page fails closed
+    # until a real provider and a token verifier exist (`app.integrations.customer_identity`).
+    customer_identity_mode: Literal["dev_simulated", "oidc"] = "dev_simulated"
+    oidc_issuer: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: SecretStr | None = None
+    oidc_redirect_uri: str | None = None
+    oidc_jwks_uri: str | None = None
 
     allowed_origins: Annotated[list[str], Field(max_length=20)] = [
         "http://localhost:3000",
@@ -110,6 +128,11 @@ class Settings(BaseSettings):
         "llm_base_url",
         "llm_api_key",
         "mock_provider_callback_secret",
+        "oidc_issuer",
+        "oidc_client_id",
+        "oidc_client_secret",
+        "oidc_redirect_uri",
+        "oidc_jwks_uri",
         mode="before",
     )
     @classmethod
@@ -151,7 +174,11 @@ class Settings(BaseSettings):
 
     @property
     def dev_customer_auth_active(self) -> bool:
-        return self.dev_customer_auth_enabled and self.environment is not Environment.PRODUCTION
+        return (
+            self.dev_customer_auth_enabled
+            and self.environment is not Environment.PRODUCTION
+            and self.customer_identity_mode == "dev_simulated"
+        )
 
     @property
     def dev_operator_cli_active(self) -> bool:

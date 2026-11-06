@@ -8,6 +8,7 @@ from app.core.config import Settings
 from app.repositories.sqlalchemy_repositories import SqlAlchemyUnitOfWork
 from app.services.application_service import ApplicationService
 from app.services.authorization_service import AuthorizationService
+from app.services.customer_information_service import CustomerInformationService
 from app.services.customer_session_service import CustomerSessionService
 from app.services.onboarding_service import OnboardingService
 from app.services.review_service import ReviewService
@@ -83,10 +84,31 @@ def get_onboarding_service(
         depot=container.depot,
         clock=container.clock,
         handoff_ttl_seconds=settings.handoff_ttl_seconds,
+        customer_information_required=settings.customer_information_required,
     )
 
 
 OnboardingServiceDep = Annotated[OnboardingService, Depends(get_onboarding_service)]
+
+
+def get_customer_information_service(
+    request: Request,
+    container: ContainerDep,
+    applications: ApplicationServiceDep,
+    onboarding: OnboardingServiceDep,
+) -> CustomerInformationService:
+    session_factory = request.app.state.session_factory
+    return CustomerInformationService(
+        lambda: SqlAlchemyUnitOfWork(session_factory),
+        applications,
+        onboarding,
+        clock=container.clock,
+    )
+
+
+CustomerInformationServiceDep = Annotated[
+    CustomerInformationService, Depends(get_customer_information_service)
+]
 
 
 def get_review_service(

@@ -273,7 +273,7 @@ def run(keep: bool, restart: bool) -> None:  # noqa: C901 - a linear, narrated s
         )
         tl.say(
             "CUSTOMER",
-            f"pressed '{HUMAN_REQUEST_BUTTON}' -> 'Request received': staff will get in touch",
+            f"pressed '{HUMAN_REQUEST_BUTTON}' -> 'Request received': request recorded",
         )
         tl.say(
             "BANK",

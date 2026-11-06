@@ -34,6 +34,9 @@ def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         if name.startswith(("TRUSTEQ_", "ANTHROPIC_")):
             monkeypatch.delenv(name)
     monkeypatch.setenv("TRUSTEQ_DATABASE_URL", "sqlite:///:memory:")
+    # The original P0 tests predate the tax and knowledge-and-experience step. The step is on by
+    # default in the application; tests/test_customer_information.py switches it on and proves it.
+    monkeypatch.setenv("TRUSTEQ_CUSTOMER_INFORMATION_REQUIRED", "false")
 
 
 @pytest.fixture

@@ -8,6 +8,10 @@
 
 Principle: *LLM proposes; policy decides; customer authorizes; bank executes.*
 
+> **Final integration:** before confirming, the customer now supplies synthetic tax information and answers the
+> knowledge-and-experience questions, on the same page and bound to the same handoff. No state or transition changed. The
+> depot call goes through the versioned adapter. See [final-integration.md](final-integration.md).
+
 ## Sequence
 
 Before step 3 a trusted operator issues the agent's narrow bootstrap grant

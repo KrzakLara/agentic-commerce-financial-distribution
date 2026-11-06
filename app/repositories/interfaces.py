@@ -13,6 +13,7 @@ from app.domain.application import DepotApplication
 from app.domain.attribution import ChannelAttribution
 from app.domain.audit import AuditEvent
 from app.domain.checks import CheckRecord, DepotSubmissionRecord
+from app.domain.customer_information import AppropriatenessRecord, TaxInformationRecord
 from app.domain.customer_session import CustomerSession
 from app.domain.enums import ApplicationStatus, CheckType, MandateKind
 from app.domain.handoff import Handoff
@@ -191,6 +192,18 @@ class DepotSubmissionRepository(Protocol):
         ...
 
 
+class CustomerInformationRepository(Protocol):
+    """One current record per application; history is in the audit trail (statuses only)."""
+
+    def save_tax(self, record: TaxInformationRecord) -> None: ...
+
+    def get_tax(self, application_id: str) -> TaxInformationRecord | None: ...
+
+    def save_assessment(self, record: AppropriatenessRecord) -> None: ...
+
+    def get_assessment(self, application_id: str) -> AppropriatenessRecord | None: ...
+
+
 class UnitOfWork(Protocol):
     applications: ApplicationRepository
     idempotency: IdempotencyRepository
@@ -204,6 +217,7 @@ class UnitOfWork(Protocol):
     review_cases: ReviewCaseRepository
     attributions: ChannelAttributionRepository
     depot_submissions: DepotSubmissionRepository
+    customer_information: CustomerInformationRepository
 
     def __enter__(self) -> Self: ...
 

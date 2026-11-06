@@ -1,10 +1,13 @@
 """PROTOTYPE demonstration of a knowledge-and-experience assessment. Synthetic data only.
 
 This is not legally complete MiFID II or WpHG compliance, not advice and not a suitability
-assessment. It is an isolated component: the frozen onboarding state machine does not call it,
-because the assessment belongs to a securities ORDER, and this prototype opens an ACCOUNT and
-executes no order. Intended integration point: a separate order step on the bank's customer
-channel, after OPENED, before an order is accepted.
+assessment. The assessment belongs to a securities ORDER, and this prototype opens an ACCOUNT and
+executes no order. So `ACCOUNT_OPENING` deliberately does not trigger it. In the journey the bank's
+page asks the questions before the customer confirms the account
+(`app.services.customer_information_service`), assesses them for the ORDER context and records the
+result for later orders. The customer sees it and decides; no result stops the account opening.
+Whether and when the assessment is legally required is for the bank's compliance function:
+`docs/final-integration.md` lists what it has to check.
 
 The rules are plain code and no model takes part: no agent tool reaches this module, and answers
 that did not come from the customer on the bank's channel do not count. Whether a statutory duty
@@ -33,6 +36,14 @@ class ProductKnowledgeLevel(StrEnum):
 
     BASIC = "BASIC"
     ADVANCED = "ADVANCED"
+
+
+_PRODUCT_LEVELS = {"depot-basic": ProductKnowledgeLevel.BASIC}
+
+
+def knowledge_level_for(product_id: str) -> ProductKnowledgeLevel:
+    """The synthetic label of a product. An unknown product gets the stricter one."""
+    return _PRODUCT_LEVELS.get(product_id, ProductKnowledgeLevel.ADVANCED)
 
 
 class AnswerSource(StrEnum):
@@ -128,6 +139,15 @@ def assess(
             requires_customer_acknowledgement=True,
         )
     return AppropriatenessResult(outcome=AppropriatenessOutcome.ASSESSMENT_OK)
+
+
+def customer_notice_for(outcome: str) -> str | None:
+    """The fixed text a stored outcome shows the customer."""
+    notices = {
+        AppropriatenessOutcome.WARNING_REQUIRED.value: _WARNING,
+        AppropriatenessOutcome.INSUFFICIENT_INFORMATION.value: _NO_ASSESSMENT,
+    }
+    return notices.get(outcome)
 
 
 def _insufficient(reasons: tuple[str, ...]) -> AppropriatenessResult:

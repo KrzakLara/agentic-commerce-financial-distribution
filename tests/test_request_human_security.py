@@ -3,6 +3,7 @@ CSRF token - on the JSON API and on the "Speak to a person" button - never a
 self-asserted header and never an agent token. Nothing about internal reviews leaks, and the
 request cannot move an application past a mandatory check."""
 
+import html
 import re
 
 import pytest
@@ -370,6 +371,36 @@ def test_the_acknowledgement_is_identical_whether_or_not_compliance_reviews(flow
     assert [row[0] for row in cases(flow, flagged.application_id)] == [
         "COMPLIANCE_REVIEW_REQUIRED"
     ]  # joined the existing case - no second one
+
+
+def test_the_acknowledgement_explains_the_next_steps_and_promises_nothing(flow: Flow) -> None:
+    started = flow.start()
+    flow.page_sign_in(started)
+    csrf = page_human_csrf(review_page(flow, started).text, started.application_id)
+    text = press_button(flow.customer_http, started.application_id, csrf).text
+    plain = html.unescape(text)
+    for expected in (
+        "Human assistance requested.",
+        "not a staff assignment or a confirmed follow-up",
+        "What happens next",
+        "listed as open for the bank's staff",
+        "does not confirm that a member of staff has been assigned",
+        "does not bypass the bank's mandatory checks",
+        "DEVELOPMENT PROTOTYPE",
+    ):
+        assert expected in plain, expected
+    assert plain.count("has been recorded") == 1  # said once, not in two messages
+    for promise in (
+        "will contact",
+        "get in touch",
+        "usual channels",
+        "business day",
+        "within",
+        " hours",
+        " minutes",
+        "today",
+    ):
+        assert promise not in plain.lower(), promise
 
 
 def test_asking_for_a_person_never_bypasses_the_mandatory_checks(flow: Flow) -> None:

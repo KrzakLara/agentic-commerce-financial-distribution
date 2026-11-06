@@ -1,5 +1,6 @@
 """The bank-controlled confirmation page (HTML) and its DEV-only simulated sign-in."""
 
+import html
 import re
 
 import pytest
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.api import pages
 from app.api.customer_auth import LOGIN_COOKIE, SESSION_COOKIE
 from app.core.config import Environment, Settings
+from app.domain.enums import ApplicationStatus
 from app.main import create_app
 from app.services.customer_session_service import hash_secret
 from app.services.onboarding_service import HandoffReview
@@ -139,6 +141,58 @@ def test_each_step_says_where_the_customer_is_and_who_decides(flow: Flow) -> Non
     result = confirm_form(flow, started)
     assert "Step 3 of 3" in result.text and "The account is not open yet" in result.text
     assert "OPENED" not in result.text  # the page never claims an outcome the provider owns
+
+
+def test_the_confirmation_message_promises_nothing_about_the_agent_or_the_checks(
+    flow: Flow,
+) -> None:
+    started = flow.start()
+    sign_in(flow, started)
+    result = confirm_form(flow, started)
+    assert "Further processing is subject to the bank's required checks." in html.unescape(
+        result.text
+    )
+    assert "Your account is not open yet." in result.text
+    lowered = result.text.lower()
+    for word in ("agent can now continue", "have run", "compliance", "aml"):
+        assert word not in lowered, word
+
+
+def test_the_step_indicator_highlights_only_the_current_step(flow: Flow) -> None:
+    started = flow.start()
+    current = re.compile(
+        r'<li class="now" aria-current="step"><span class="num">(\d)</span>([^<]+)'
+    )
+    form = flow.customer_http.get(page_url(started), params={"token": started.nonce})
+    assert current.findall(form.text) == [("1", "Sign in")]
+    sign_in(flow, started)
+    page = flow.customer_http.get(page_url(started), params={"token": started.nonce})
+    assert current.findall(page.text) == [("2", "Review and confirm")]
+    result = confirm_form(flow, started)
+    assert current.findall(result.text) == [("3", "Confirmation recorded")]
+    assert result.text.count('<li class="done">') == 2
+
+
+def test_every_approved_term_stays_visible_on_the_review_page(flow: Flow) -> None:
+    """The polished layout groups the details into cards; it must not fold any of them away."""
+    started = flow.start()
+    sign_in(flow, started)
+    html = flow.customer_http.get(page_url(started), params={"token": started.nonce}).text
+    for expected in (
+        "Custody fee (MOCK)",
+        "0.00 EUR p.a.",
+        "Order fee (MOCK)",
+        "4.90 EUR",
+        "no minimum deposit",  # conditions
+        "3 of 7 (synthetic scale)",  # risk class
+        "pli-depot-basic",  # source
+        "not a suitability assessment",  # the note
+        "SHA-256",  # the disclosure document's digest
+        "Terms digest",
+        "Action digest",
+    ):
+        assert expected in html, expected
+    assert "<details" not in html and "display:none" not in html
 
 
 def test_the_confirm_button_completes_the_ceremony_end_to_end(flow: Flow) -> None:
@@ -335,6 +389,7 @@ def test_every_dynamic_value_is_html_escaped() -> None:
     application = DepotApplication(
         application_id="app-1", provider_id="p", product_id="q", channel_id="c",
         customer_ref="cust-1", agent_actor_id="a", created_at=now, updated_at=now,
+        status=ApplicationStatus.AWAITING_AUTHORIZATION,  # so the confirmation form is rendered
     )  # fmt: skip
     html = pages.review_page(
         review=HandoffReview(handoff, application, "<script>steal()</script>"),

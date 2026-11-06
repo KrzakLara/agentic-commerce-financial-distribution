@@ -30,3 +30,15 @@ class ProviderSubmission(DomainModel):
     provider_ref: OpaqueId
     accepted: bool
     mock: bool
+    # Set by the versioned adapter, for the audit trail. Machine codes only, no provider content.
+    contract_version: str | None = None
+    fallback_from: str | None = None
+    refusal: str | None = None
+
+    def audit_details(self) -> dict[str, str]:
+        details = {
+            "contract_version": self.contract_version,
+            "fallback_from": self.fallback_from,
+            "refusal": self.refusal,
+        }
+        return {name: value for name, value in details.items() if value is not None}

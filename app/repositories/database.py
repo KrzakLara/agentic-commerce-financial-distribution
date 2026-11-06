@@ -12,6 +12,8 @@ the next start; SQLite DDL is not reliably transactional through the pysqlite dr
 * v3 -> v4 (Phase 04): ``check_results`` is rebuilt (numbered ``attempt``s; rows carried over
   as attempt 1); ``disclosure_receipts`` gains its binding columns; the
   application-identity trigger is added; ``review_cases`` and ``channel_attributions`` are new.
+* v4 -> v5 (final integration): ``tax_information`` and ``appropriateness_assessments`` are new
+  tables. Nothing existing changes; ``create_all`` adds them and existing rows stay untouched.
 
 SQLite cannot drop a NOT NULL / UNIQUE constraint in place, hence "rebuild": rename the old
 table, let ``create_all`` create the new one with all constraints and triggers, copy the rows,
@@ -30,7 +32,8 @@ from app.domain.mandate import AUTHORIZATION_ISSUER
 # 2: Phase 02 adds mandates, handoffs, receipts, checks
 # 3: Phase 03 rebuilds mandates; adds agent_access_tokens and customer_sessions
 # 4: Phase 04 check attempts, review cases, channel attributions, disclosure binding
-SCHEMA_VERSION = 4
+# 5: final integration adds tax_information and appropriateness_assessments (new tables only)
+SCHEMA_VERSION = 5
 _MEMORY_URLS = {"sqlite://", "sqlite:///:memory:"}
 
 

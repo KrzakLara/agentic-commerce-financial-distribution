@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.attribution import ChannelAttribution
 from app.domain.checks import CheckRecord, DepotSubmissionRecord
+from app.domain.customer_information import AppropriatenessRecord, TaxInformationRecord
 from app.domain.customer_session import CustomerSession
 from app.domain.enums import (
     ApplicationStatus,
@@ -34,6 +35,7 @@ from app.domain.receipts import ConsentReceipt, DisclosureReceipt
 from app.domain.review import ManualReviewCase, ReviewEvidence
 from app.repositories.orm import (
     AgentAccessTokenRow,
+    AppropriatenessRow,
     ChannelAttributionRow,
     CheckResultRow,
     ConsentReceiptRow,
@@ -43,6 +45,7 @@ from app.repositories.orm import (
     HandoffRow,
     MandateRow,
     ReviewCaseRow,
+    TaxInformationRow,
 )
 
 
@@ -557,6 +560,29 @@ class SqlAlchemyChannelAttributionRepository:
             )
         ).scalar_one_or_none()
         return ChannelAttribution.model_validate(row, from_attributes=True) if row else None
+
+
+class SqlAlchemyCustomerInformationRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save_tax(self, record: TaxInformationRecord) -> None:
+        self._session.merge(TaxInformationRow(**record.model_dump()))
+        self._session.flush()
+
+    def get_tax(self, application_id: str) -> TaxInformationRecord | None:
+        row = self._session.get(TaxInformationRow, application_id)
+        return TaxInformationRecord.model_validate(row, from_attributes=True) if row else None
+
+    def save_assessment(self, record: AppropriatenessRecord) -> None:
+        values = record.model_dump()
+        values["reasons"] = list(record.reasons)
+        self._session.merge(AppropriatenessRow(**values))
+        self._session.flush()
+
+    def get_assessment(self, application_id: str) -> AppropriatenessRecord | None:
+        row = self._session.get(AppropriatenessRow, application_id)
+        return AppropriatenessRecord.model_validate(row, from_attributes=True) if row else None
 
 
 class SqlAlchemyDepotSubmissionRepository:

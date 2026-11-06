@@ -7,6 +7,8 @@ the three scripted demos and the customer pages.
 This is a prototype with synthetic data. It opens no real account, creates no legally valid contract
 and claims no regulatory compliance. Where this runbook and the presentation outline differ (slide 8
 notes, slide 9 numbers), this runbook is current for the demo. The outline has not been updated yet.
+Updated for the final integration: [docs/final-integration.md](../final-integration.md) has what is
+integrated, and [section 12](#12-evidence-after-the-final-integration) has the current evidence.
 
 **On the day you need only two sections:** [section 4](#4-pre-flight) before the talk and
 [section 5](#5-the-timed-walkthrough-2-minutes-maximum) during it.
@@ -18,7 +20,11 @@ notes, slide 9 numbers), this runbook is current for the demo. The outline has n
 | FastAPI server, REST API, persistent state machine, deterministic policy gate | **Real** | Started by each demo on `127.0.0.1` with a throw-away SQLite file |
 | Agent tokens, scopes and revocation; customer session, CSRF and cross-site checks; audit records; signature checks on manifests and on the callback | **Real, DEV-grade** | Tested prototype controls, not OAuth 2.0 / FAPI 2.0 |
 | The agent in the three demos | **Scripted** | `ScriptedCustomerAgent`: deterministic, no model, no API key |
-| Customer identity | **Simulated** | The sign-in form accepts any typed customer ID; the JSON confirmation accepts the `X-Dev-Customer-Id` header. See [section 2](#2-security-disclosure-f-1) |
+| Customer identity | **Simulated** | The sign-in form accepts any typed customer ID; the JSON confirmation needs the session and CSRF token. See [section 2](#2-security-disclosure-f-1) |
+| Tax information | **Real validation, synthetic data** | Customer page and API. A local format check of an invented ID; no tax authority. The ID is discarded |
+| Knowledge and experience | **Real rules, synthetic data** | Customer page and API, deterministic result. Not legal compliance. No result stops the account |
+| Approved product facts | **Real** | The bank's structured claims with source and version. It does not control what a third-party agent writes |
+| Versioned provider contract | **Real adapter, mock provider** | Schema validation and an explicit fallback policy, in every submission |
 | Bank operator | **Simulated** | `scripts.dev_operator` with synthetic identities; there is no operator HTTP endpoint |
 | KYC, compliance, contract | **Mock** | Fixed results, stored with `mock=true` and `MOCK-` references. A customer reference starting with `synthetic-review-` selects `REVIEW_REQUIRED` |
 | Depot provider | **Mock** | Its confirmation is signed with a local HMAC key |
@@ -26,21 +32,22 @@ notes, slide 9 numbers), this runbook is current for the demo. The outline has n
 
 ## 2. Security disclosure (F-1)
 
-Phase 06 documented this limit as finding F-1. It is **not fixed**, on purpose, and Phase 07 did not
-change it. State it in every presentation of this demo; the walkthrough ends with it.
+Phase 06 documented this limit as finding F-1. **The demonstrated header bypass is closed, and the limit
+remains**: state it in every presentation of this demo; the walkthrough ends with it. No external identity
+provider is available to this project, so real sign-in is blocked by provider access, not implemented.
 
 - **The agent cannot independently confirm customer consent through its own scoped credentials.** A
   request with its bearer token is refused on every customer route (401), and neither agent
   implementation has a tool for it.
 - **Customer identity is simulated in DEV mode.** Nothing verifies who the customer is.
-- **An untrusted caller with access to the DEV-only customer identity header may impersonate a customer
-  in this prototype.** Phase 06 reproduced it: the values an agent already holds, plus
-  `X-Dev-Customer-Id` and no bearer token, record a valid consent and reach
-  `SUBMITTED_TO_DEPOT_PROVIDER`. `OPENED` still needs the provider's signature. Steps:
-  [docs/phase-06-security-reliability.md](../phase-06-security-reliability.md#5-findings-and-remaining-limitations).
+- **Anyone who can use the DEV sign-in form can impersonate a customer in this prototype.** A caller
+  with the handoff values and the customer reference can script the sign-in, supply the tax information
+  and answers, and record a consent. `X-Dev-Customer-Id` no longer works on any route. `OPENED` still needs
+  the provider's signature. See [docs/final-integration.md](../final-integration.md#4-customer-identity-blocked-and-what-exists).
 - **A production deployment requires real authenticated customer sessions** in a bank-controlled channel,
-  plus stronger authorization and identity controls. Production mode refuses the DEV header today, but
-  then nobody can confirm, because no real customer channel exists yet.
+  plus stronger authorization and identity controls. In production mode, or with
+  `TRUSTEQ_CUSTOMER_IDENTITY_MODE=oidc`, the DEV sign-in is off and customer pages fail closed, because no
+  real customer channel exists yet.
 
 **Do not say:** "production-grade authentication", "a rogue client cannot self-approve", or "every
 refusal is audited" (see [Scenario B](#scenario-b---denied-attack)).
@@ -49,8 +56,12 @@ refusal is audited" (see [Scenario B](#scenario-b---denied-attack)).
 
 - 20 of 20 LLM cases is one live run with one sample per case, written by the prompt's author. The model
   made no bypass attempt, so it mostly measured model behaviour; the attack evidence is offline.
-- 55 of 55 mutants is a hand-picked set, not a mutation score. Some controls have no mutant, and the run
-  predates this phase's small change to the customer pages.
+- Mutants are a hand-picked set, not a mutation score. 55 of 55 is the Phase 06 result on `00dfaf2`. The
+  final integration ran a focused set only: [section 12](#12-evidence-after-the-final-integration).
+- That live run also predates the approved claims in the agent's tool result. Their effect on a real model
+  is not measured.
+- Tax validation is a format check, and the knowledge questions are a synthetic demonstration. Neither is
+  legal compliance.
 
 ## 3. Setup and dependencies
 
@@ -104,24 +115,28 @@ $key = '^TRUSTEQ|^== [1-9]|^RESULT|^Reminder|discovered provider|product depot-b
 function Demo-Happy  { Clear-Host; .\.venv\Scripts\python.exe -m scripts.demo_happy --no-restart | Tee-Object "$env:TEMP\trusteq_happy.txt" | Select-String $key }
 function Demo-Denied { Clear-Host; .\.venv\Scripts\python.exe -m scripts.demo_denied | Tee-Object "$env:TEMP\trusteq_denied.txt" | Select-String $key }
 function Demo-Review { Clear-Host; .\.venv\Scripts\python.exe -m scripts.demo_manual_review --no-restart | Tee-Object "$env:TEMP\trusteq_review.txt" | Select-String $key }
+$keyIntegrated = '^TRUSTEQ|^== |^RESULT|^Reminder|approved fact: According|does not contain|goes to a person|claim check|no Confirm yet|real-looking|locally validated|knowledge-and-experience result|still sees only|Confirm and authorize|provider adapter audit|signed callback|server reports: |audit trail:|no tax identifier'
+function Demo-Integrated { Clear-Host; .\.venv\Scripts\python.exe -m scripts.demo_integrated | Tee-Object "$env:TEMP\trusteq_integrated.txt" | Select-String $keyIntegrated }
 ```
 
 ### Dry run and fallback transcripts
 
 This runs each demo once and keeps today's real transcripts for [the fallback](#8-safe-offline-fallback),
 because the live runs overwrite the working files. Each helper clears the screen, so the block ends by
-printing the three results. **All three must say `RESULT: PASS`.**
+printing the four results. **All four must say `RESULT: PASS`.**
 
 ```powershell
 # Block 2 - dry run and fallback copies
+Demo-Integrated
 Demo-Happy
 Demo-Denied
 Demo-Review
+Copy-Item "$env:TEMP\trusteq_integrated.txt" "$env:TEMP\trusteq_integrated_preflight.txt"
 Copy-Item "$env:TEMP\trusteq_happy.txt"  "$env:TEMP\trusteq_happy_preflight.txt"
 Copy-Item "$env:TEMP\trusteq_denied.txt" "$env:TEMP\trusteq_denied_preflight.txt"
 Copy-Item "$env:TEMP\trusteq_review.txt" "$env:TEMP\trusteq_review_preflight.txt"
 Clear-Host
-Get-Content "$env:TEMP\trusteq_happy_preflight.txt", "$env:TEMP\trusteq_denied_preflight.txt", "$env:TEMP\trusteq_review_preflight.txt" | Select-String '^RESULT'
+Get-Content "$env:TEMP\trusteq_integrated_preflight.txt", "$env:TEMP\trusteq_happy_preflight.txt", "$env:TEMP\trusteq_denied_preflight.txt", "$env:TEMP\trusteq_review_preflight.txt" | Select-String '^RESULT'
 ```
 
 Then maximize the window and set a font size at which a `Demo-Review` run fits on one screen without
@@ -162,7 +177,14 @@ Start-Process $handoff.confirmation_url
 ```
 
 It must print `AWAITING_CUSTOMER`. In the browser, enter `demo-customer-1` as the customer ID and press
-**Sign in (simulated)**. Stop at **Step 2 of 3** and leave the tab there. If your default browser is not
+**Sign in (simulated)**. You are at **Step 2 of 3**. Scroll down and prepare the tab with synthetic values only:
+
+1. **Tax information:** country `DE`, tax ID `SYNTH-TAX-700421`, US person **No**. Press **Check and save tax
+   information**.
+2. **Knowledge and experience:** first question **True**, second **False**, third **More than 5**. Press **Save my
+   answers**.
+
+**Confirm and authorize** now appears. Leave the tab there; do not press it yet. If your default browser is not
 Chrome, the only browser verified, open the link from `$handoff.confirmation_url` in Chrome instead.
 
 To rehearse the browser step again, run Block 4 again and do not reset anything: a confirmed link cannot
@@ -181,41 +203,44 @@ window can be shared, share the terminal and use the "no browser" line below.
 | Time | Screen | You do |
 |---|---|---|
 | 0:00-0:10 | Terminal | Frame the demo |
-| 0:10-0:27 | Terminal | Scenario A: run `Demo-Happy` |
+| 0:10-0:27 | Terminal | Scenario A: run `Demo-Integrated` |
 | 0:27-0:47 | Browser | Press `End`, then **Confirm and authorize** |
 | 0:47-1:00 | Terminal | Point at sections 4 to 7 of the output |
 | 1:00-1:22 | Terminal | Scenario B: run `Demo-Denied` |
 | 1:22-1:42 | Terminal | Scenario C: run `Demo-Review` |
 | 1:42-2:00 | Terminal | Disclosure (F-1) |
 
-To start a demo, type `demo-h`, `demo-d` or `demo-r`, then press Tab and Enter. Keep talking while it runs:
+To start a demo, type `demo-i`, `demo-d` or `demo-r`, then press Tab and Enter. Keep talking while it runs:
 the output arrives after about 4 seconds, and no command needs waiting for in silence.
 
-The speaker notes have 242 words: about 1:44 at 140 words a minute, which leaves about 16 seconds for typing
-and window switches. That is a calculation, not a measurement. Only a timed rehearsal can confirm it.
+The speaker notes have 244 words: about 1:45 at 140 words a minute, before typing and window
+switches. That is a calculation, not a measurement, and it is tight. Only a timed rehearsal can confirm it. If it
+runs long, shorten Scenario C first.
 
 **0:00-0:10, frame.**
 
 > "A live run on this laptop, with synthetic data. KYC, compliance, contract and the depot bank are mocks;
 > customer identity is simulated."
 
-**0:10-0:27, Scenario A.** Run `Demo-Happy`. Point at section 2 and section 3.
+**0:10-0:27, Scenario A.** Run `Demo-Integrated`. Point at the approved fact and the declined one, then
+section 3.
 
-> "First, a successful onboarding. The agent selects a verified provider and product, creates a draft and
-> requests customer authorization. Status: awaiting customer. If it tries to confirm with its own token,
-> the bank answers 401."
+> "First, a successful onboarding. The agent reads approved facts with their source, and declines what the
+> source doesn't contain. It prepares the application and requests customer authorization. Status: awaiting
+> customer."
 
 **0:27-0:47, the customer's page.** Alt+Tab to the browser. Point at the Step 2 line and the agent notice,
-press `End`, press **Confirm and authorize**.
+press `End`, point at the tax and knowledge cards, press **Confirm and authorize**.
 
-> "This step belongs to the bank. The page refuses agent credentials and shows the exact action. I confirm
-> as the simulated customer. This tab is a second synthetic application; the script played the same step."
+> "This step belongs to the bank. The customer reviews the exact action, gives synthetic tax information and
+> answers the knowledge questions. None of it reaches the agent. I confirm as the simulated customer. This tab
+> is a second synthetic application; the script played the same steps."
 
-**0:47-1:00, back to the result.** Alt+Tab to the terminal. Point at the checks, the provider line and
-`OPENED`.
+**0:47-1:00, back to the result.** Alt+Tab to the terminal. Point at the adapter's `contract_version`, the signed
+callback and `OPENED`.
 
-> "Mock KYC, compliance and contract checks run. The agent submits, but only the provider's signed
-> confirmation reaches OPENED, and then the agent's onboarding privileges are revoked."
+> "Mock KYC, compliance and contract checks run. The agent submits through a versioned provider contract, but
+> only the provider's signed confirmation reaches OPENED."
 
 **1:00-1:22, Scenario B.** Run `Demo-Denied`. Point at section 2 and the `NOT REJECTED` line.
 
@@ -233,8 +258,8 @@ transitions.
 **1:42-2:00, disclosure.**
 
 > "One limit, clearly. The agent can't confirm with its own scoped credentials, but customer identity is
-> simulated: an untrusted caller with the DEV-only customer header could impersonate a customer here.
-> Production needs real authenticated customer sessions and stronger identity and authorization controls."
+> simulated: anyone who can use the DEV sign-in form could impersonate a customer here. Production needs real
+> bank authentication and stronger identity and authorization controls."
 
 **If you run late or something fails:**
 
@@ -247,11 +272,16 @@ transitions.
 
 | Question | Answer |
 |---|---|
-| "Can a rogue client approve by itself?" | In this prototype, a caller who holds the handoff values and sends the DEV header can record a consent (F-1). An agent cannot do it with its credentials and has no tool for it. `OPENED` still needs the provider's signature. A real bank sign-in closes this |
+| "Can a rogue client approve by itself?" | In this prototype, yes: a caller with the handoff values can script the DEV sign-in, supply the information and record a consent. An agent cannot do it with its credentials and has no tool for it. The header shortcut is closed. `OPENED` still needs the provider's signature. A real bank sign-in closes this |
+| "Is the tax ID checked?" | Only its invented format, on the bank's page. It is then discarded. No tax authority is involved |
+| "Is that a real appropriateness assessment?" | A synthetic demonstration with deterministic rules. It belongs to later orders, and no result stops the account. Whether and when it is required is for the bank's compliance team |
+| "Is the identity real?" | No. No identity provider is available to this project. The OIDC boundary fails closed; a test login would prove authentication, not eID or KYC |
+| "What if the provider changes its API?" | [The compatibility matrix](../evidence/provider-compatibility-matrix.md): fallback only with explicit permission from both sides, and a failed integration advances nothing |
+| "Can you stop an agent from making things up?" | No. The bank controls its signed data and approved claims, not what a third-party agent writes |
 | "Is that a real LLM?" | These three runs are scripted. A real model uses the same tools and API: [section 10](#10-the-real-llm-interaction-optional) |
 | "Where is the audit trail?" | Open the full transcript: `notepad "$env:TEMP\trusteq_happy.txt"`, section 8 |
 | "Does the state survive a restart?" | `.\.venv\Scripts\python.exe -m scripts.demo_happy` (without `--no-restart`) stops and restarts the server |
-| "Have you tested it in a real browser?" | Yes, in Chrome, and it found a real bug: [finding F-8](#finding-f-8-the-customer-forms-failed-in-real-browsers) |
+| "Have you tested it in a real browser?" | Yes, in Chrome, and it found a real bug: [finding F-8](#finding-f-8-the-customer-forms-failed-in-real-browsers). The integrated journey passed an automated Chrome run too: [section 12](#12-evidence-after-the-final-integration) |
 
 ## 6. Running each demo
 
@@ -337,6 +367,22 @@ print(r.status_code, r.json())
 
 Expected, in order: `IN_PROGRESS`, `200 {'result': 'accepted'}`, `OPENED`.
 
+### The integrated journey
+
+`.\.venv\Scripts\python.exe -m scripts.demo_integrated` runs everything in
+[docs/final-integration.md](../final-integration.md#3-the-integrated-journey), from discovery to `OPENED`.
+
+| Option | Shows |
+|---|---|
+| `--profile experienced` (default) | `ASSESSMENT_OK` |
+| `--profile novice` | `WARNING_REQUIRED`, the customer acknowledges, the account still opens |
+| `--profile incomplete` | `INSUFFICIENT_INFORMATION`, same |
+| `--depot-scenario manipulated_opened` | A failing provider: refused, and nothing advances. Other names are in `.env.example` |
+
+`.\.venv\Scripts\python.exe -m scripts.provider_compat_matrix` prints the provider matrix from a fresh run.
+
+**A provider scenario in the browser:** set `$env:TRUSTEQ_MOCK_DEPOT_SCENARIO = "v2_deprecated_fallback"` before Block 3.
+
 ### Scenario B - denied attack
 
 A denied request is a security outcome, not a business decision: the application is never set to `REJECTED`
@@ -364,7 +410,7 @@ TRUSTEQ - Phase 04 DENIED demo: refused, audited, business state unchanged (SYNT
   2.70s  BANK           7 refusals in the audit trail, each with its reason:
 == 6. The real customer is unaffected and can still continue
 RESULT: PASS - every unauthorized or injected action was refused, 7 of them with an audit event (listed above); the application's business state never changed (denied is not REJECTED).
-Reminder: all data is synthetic. Known DEV limit these refusals do not cover (F-1): customer identity is SIMULATED. Section 6 plays the customer with the DEV-only X-Dev-Customer-Id header, and an untrusted caller with the handoff values could send it too. OPENED still needs the provider's signature; production needs real customer sessions.
+Reminder: all data is synthetic. Known DEV limit these refusals do not cover (F-1): customer identity is SIMULATED. Section 6 signs in through the DEV sign-in form, which accepts any customer ID, so an untrusted caller could script it too. OPENED still needs the provider's signature; production needs real bank authentication.
 ```
 
 **Every refusal in the full output.** Seven have an audit event. The others are refused without one:
@@ -386,6 +432,7 @@ missing token. So do not say "every refusal is audited".
 | Self-asserted `X-Dev-Actor-Id` header | `HTTP 401 authentication_required` | None |
 | Read another agent's application | `HTTP 404 not_found` | `application.access_denied` (`not_owner`) |
 | `request-human` with only a self-asserted customer ID | `HTTP 401 authentication_required` | `review.human_request_denied` (`no_customer_session`) |
+| Confirm with leaked values and only a self-asserted customer ID | `HTTP 401 authentication_required` | None |
 | Another signed-in customer asks for a person | `HTTP 404 not_found` | `review.human_request_denied` (`not_the_customer`) |
 | Seven provider manifest attacks, checked in-process | `REJECTED [reason]` | Not applicable: the manifest never loads |
 
@@ -411,7 +458,7 @@ TRUSTEQ - Phase 04 MANUAL REVIEW demo: human review without bypass (SYNTHETIC / 
   2.53s  AGENT          submit while in review -> HTTP 409 prerequisites_not_met
   2.57s  MOCK PROVIDER  a correctly SIGNED 'opened' message for this unsubmitted application -> HTTP 403 confirmation_rejected
 == 4. Customer presses 'Speak to a person' (bank page, session + CSRF)
-  2.58s  CUSTOMER       pressed 'Speak to a person' -> 'Request received': staff will get in touch
+  2.58s  CUSTOMER       pressed 'Speak to a person' -> 'Request received': request recorded
 == 5. OPERATOR (trusted dev console): review with evidence, never an override
   2.64s  OPERATOR       dev_operator --operator op-reviewer-1 decide --case --decision RE_EVALUATE -> exit 1
   2.66s  OPERATOR       dev_operator --operator op-reviewer-1 decide --case --decision REJECT -> exit 1
@@ -426,8 +473,8 @@ Reminder: KYC, compliance, contract and the depot provider are MOCK; customer an
 ```
 
 **"Speak to a person" in the browser (verified in Chrome).** The button is on the review page and on the
-result page. Pressing it shows **Request received**: "Your request to speak with a person has been recorded.
-A member of staff will contact you through the bank's usual channels." The answer never says whether a
+result page. Pressing it shows **Request received**: "Your request to speak with a person has been recorded."
+The page does not confirm a staff assignment or any follow-up. The answer never says whether a
 review exists. Pressed on the review page, it pauses the application: the agent then sees `ACTION_REQUIRED`
 and the case appears in the operator's list:
 
@@ -452,6 +499,7 @@ Stop-Process -Id $server.Id
 Start-Sleep -Seconds 2
 Remove-Item "$env:TEMP\trusteq_browser_demo.db*"
 Remove-Item Env:TRUSTEQ_*
+Remove-Item "$env:TEMP\trusteq_integrated.txt", "$env:TEMP\trusteq_integrated_preflight.txt"
 Remove-Item "$env:TEMP\trusteq_happy.txt", "$env:TEMP\trusteq_denied.txt", "$env:TEMP\trusteq_review.txt"
 Remove-Item "$env:TEMP\trusteq_happy_preflight.txt", "$env:TEMP\trusteq_denied_preflight.txt", "$env:TEMP\trusteq_review_preflight.txt"
 ```
@@ -571,7 +619,28 @@ pytest 9.2.0, Ruff 0.17.3, FastAPI 0.162.0, `anthropic` 0.125.0, Chrome 156.
 The state machine, policy gate, authorization rules, cross-site check, database schema and agents did not
 change.
 
-### Finding F-8: the customer forms failed in real browsers
+## 12. Evidence after the final integration
+
+Measured on 2026-11-05 and 2026-11-06, on the final-integration code on top of commit `5a10024`. The full record, with
+limits, is in [evidence-summary.md](evidence-summary.md). [Section 11](#11-evidence-behind-this-runbook) stays the record of
+Phase 07 and its older numbers.
+
+| Check | How | Observed |
+|---|---|---|
+| Test suite | `python -m pytest` (2026-11-05) | **991 passed**, 0 failed, 163 s |
+| Lint and format | `ruff check .`, `ruff format --check .` | Clean on 2026-11-05 and again on 2026-11-06 |
+| Demos | `demo_integrated`, `demo_happy`, `demo_denied`, `demo_manual_review` | 4 of 4: exit 0, `RESULT: PASS`. The last three switch the tax and assessment step off and say so |
+| Integrated variants | `--profile novice`, `--profile incomplete`, three `--depot-scenario` values | Exit 0, with `WARNING_REQUIRED`, `INSUFFICIENT_INFORMATION` and the expected adapter audit records |
+| Scripted evaluation | `eval_llm --mode scripted` | 14 of 14. No model and no key |
+| Focused mutants | `security_mutations --only` with 15 mutants | 15 of 15 killed. Not the 71 in the file. 55 of 55 remains the Phase 06 result on `00dfaf2` |
+| The blocks in this file | Extracted and run in order in one PowerShell session (2026-11-05) | All six gave the stated output. A script (`scripts.customer_steps`) played the browser step of Block 4 |
+| Integrated journey in Chrome | Automated visible Chrome 156, temporary profile (2026-11-06) | 34 of 34 checks, exit 0. The only host requested was `127.0.0.1:8000`, with no unexpected console or page errors |
+| Secrets and files | Scan of all outgoing changes (2026-11-06) | No known secret pattern, no `.env` value, no database or `.claude/` file. The Phase 05 result files and `app/agents/llm.py` are unchanged |
+
+**Still not measured:** a stopwatch rehearsal, clicks by a human hand on the integrated page, a projector, any browser but
+Chrome, and the effect of the approved claims on a real model.
+
+## Finding F-8: the customer forms failed in real browsers
 
 Found in this phase, the first time the customer pages were opened in a real browser. **Until then, no form on
 them could be submitted in Chrome.** Every sign-in, confirmation and "Speak to a person" post was refused with
