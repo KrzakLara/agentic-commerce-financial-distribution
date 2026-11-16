@@ -1,6 +1,6 @@
-﻿# TRUSTEQ - Secure Agentic Depot Onboarding
+﻿# Secure Agentic Depot Onboarding
 
-A modular-monolith FastAPI project for the TRUSTEQ GmbH AI Engineering case study.
+A modular-monolith FastAPI project.
 
 **Trust integration (local, synthetic):** an independent agent process can discover and verify a synthetic provider, get a
 customer's delegation, prepare an application, and reach a synthetic `OPENED` through signed provider callbacks. Run
