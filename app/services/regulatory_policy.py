@@ -17,6 +17,8 @@ from enum import StrEnum
 from typing import Any
 
 POLICY_VERSION = "regulatory-matrix-2026.11-engineering"
+POLICY_DATE = "2026-11-06"
+POLICY_SOURCE = "regulatory-policy-matrix"
 
 
 class Service(StrEnum):
@@ -328,3 +330,35 @@ def evaluate(service: Service, facts: Mapping[str, Any]) -> dict[str, Any]:
 def applicability_matrix() -> list[dict[str, Any]]:
     """The matrix in its default state, for the documentation and for reviewers."""
     return [evaluate(service, {}) for service in Service]
+
+
+OFFERED_SERVICES = frozenset({Service.ACCOUNT_OPENING, Service.PRODUCT_INFORMATION})
+_HANDLING = {
+    Service.ACCOUNT_OPENING: "PROCEED_WITH_THE_ACCOUNT_OPENING_GATES",
+    Service.PRODUCT_INFORMATION: "NON_PERSONALIZED_INFORMATION_ONLY",
+    Service.ORDER_NON_ADVISED: "NOT_OFFERED_WOULD_NEED_KNOWLEDGE_TEST_AND_WARNING",
+    Service.ORDER_EXECUTION_ONLY: "NOT_OFFERED_WOULD_NEED_COMPLIANCE_TO_CONFIRM_THE_EXEMPTION",
+    Service.INVESTMENT_ADVICE: "NOT_OFFERED_WOULD_NEED_SUITABILITY_ASSESSMENT",
+    Service.PORTFOLIO_MANAGEMENT: "NOT_OFFERED_WOULD_NEED_SUITABILITY_ASSESSMENT",
+}
+
+
+def service_applicability(facts: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """One decision per service, side by side: an account opening is not advice, nor an order.
+
+    The questionnaire on the customer's page belongs to later orders. For the account opening it is
+    a step of this prototype (the customer sees it and decides), not a duty the matrix derives from
+    the law, and no answer stops the account. Which of this holds is for compliance to confirm.
+    """
+    decisions: dict[str, dict[str, Any]] = {}
+    for service in Service:
+        rules = {rule["rule_id"]: rule for rule in evaluate(service, facts)["rules"]}
+        decisions[service.value] = {
+            "offered": service in OFFERED_SERVICES,
+            "appropriateness": rules["APPROPRIATENESS"]["applies"],
+            "appropriateness_gate": rules["APPROPRIATENESS"]["gate"],
+            "suitability": rules["SUITABILITY"]["applies"],
+            "handling": _HANDLING[service],
+            "legal_confirmation_required": rules["APPROPRIATENESS"]["legal_confirmation_required"],
+        }
+    return decisions

@@ -1,0 +1,43 @@
+flowchart TD
+  S1["Discover and compare: the agent researches and explains verified facts"]
+  S2["Delegate to the agent: the customer approves scopes and offer"]
+  S3["Draft application: the agent proposes, the bank checks the verified offer"]
+  S4["Identity proofing: external provider result, bank gate"]
+  S5["Tax information: the customer supplies, the bank validates"]
+  S6["Knowledge and experience: deterministic bank rules"]
+  S6W["Warning: the customer acknowledges, no automatic rejection"]
+  S7["Confirm the exact action: the customer, in the bank channel"]
+  S8["KYC and compliance: provider result plus bank policy"]
+  S9["Sign the contract: the customer authorizes, the signer signs"]
+  S10["Submit: bank policy gate over all evidence"]
+  S11["Open the depot: the depot provider's signed confirmation"]
+  HR["Human review case: a person decides, checks cannot be skipped"]
+
+  S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9 --> S10 --> S11
+  S6 -->|"knowledge gap"| S6W --> S7
+  S4 -->|"rejected, expired, manual review"| HR
+  S8 -->|"review required"| HR
+  S9 -->|"declined, failed, expired"| HR
+  S10 -->|"contract no longer holds"| HR
+  S7 -.->|"customer asks for a person"| HR
+
+  subgraph KEY["Who decides"]
+    direction TB
+    KA["AI-assisted, never binding"]
+    KC["Customer-controlled"]
+    KP["Deterministic bank policy"]
+    KX["External regulated provider"]
+    KH["Human review"]
+  end
+
+  classDef ai fill:#DAFF7D,stroke:#003366,stroke-width:1px,color:#000000
+  classDef customer fill:#003366,stroke:#003366,color:#FFFFFF
+  classDef policy fill:#E8E9EB,stroke:#003366,stroke-width:1px,color:#000000
+  classDef provider fill:#FFFFFF,stroke:#AE9966,stroke-width:2px,color:#000000
+  classDef human fill:#DDE4EA,stroke:#0062C7,stroke-width:2px,color:#000000
+  class S1,KA ai
+  class S2,S5,S6W,S7,S9,KC customer
+  class S3,S6,S10,KP policy
+  class S4,S8,S11,KX provider
+  class HR,KH human
+  style KEY fill:#FFFFFF,stroke:#DDE4EA

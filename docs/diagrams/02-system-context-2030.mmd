@@ -1,0 +1,65 @@
+flowchart LR
+  subgraph OUT["Outside the provider's trust boundary"]
+    direction TB
+    C["Customer<br/>authenticates, decides, signs"]
+    A["Personal AI agent<br/>independent and untrusted"]
+  end
+
+  subgraph BANK["Provider platform: depot bank and fund group, bank-controlled"]
+    direction TB
+    LA["A Discovery and provider trust<br/>Agent Card, signed metadata, federation"]
+    LB["B Customer and agent trust<br/>OIDC login, scoped DPoP delegation"]
+    LD["D CommunicationGuard<br/>verified facts, refusal of unsupported claims"]
+    LC["C Bank-owned orchestration<br/>state machine, typed tools, checkpoints"]
+    LP["Deterministic policy<br/>versioned regulatory rules"]
+    LE["E Regulated onboarding<br/>identity gate, tax, appropriateness,<br/>contract package, submission"]
+    LF["F Channel governance<br/>origin, attribution, referral provenance"]
+    LG["G Evidence and audit<br/>append-only, correlation IDs"]
+    HR["Human review<br/>durable cases, no bypass"]
+  end
+
+  subgraph EXT["Separate regulated or contracted parties"]
+    direction TB
+    TA["Trust authority<br/>provider identity"]
+    IDP["Customer identity<br/>bank SCA, eID, EUDI Wallet"]
+    KYC["Identity proofing and KYC"]
+    SIG["Signature provider<br/>QTSP only where a QES is required"]
+    CUS["Custodian and depot system"]
+    PB["Partner bank<br/>branch distribution"]
+  end
+
+  A -->|"public read"| LA
+  A -->|"asks questions"| LD
+  A -->|"proposes with a scoped token"| LB
+  C -->|"signs in, delegates"| LB
+  C -->|"identity, tax, answers, consent, signing"| LE
+  LB --> LC
+  LC --> LP
+  LP --> LE
+  LF --> LP
+  LE --> LG
+  LC --> HR
+  LE --> HR
+  LA -.- TA
+  LB -.- IDP
+  LE -.- KYC
+  LE -.- SIG
+  LE -->|"versioned adapter, signed callback"| CUS
+  PB -->|"signed referral proof"| LF
+
+  subgraph KEY["Status in the 2026 prototype"]
+    direction TB
+    K1["Implemented and tested locally"]
+    K2["Local synthetic or mock stand-in<br/>the named real party is the 2030 target"]
+  end
+
+  classDef local fill:#E8E9EB,stroke:#003366,stroke-width:1px,color:#000000
+  classDef synthetic fill:#FFFFFF,stroke:#AE9966,stroke-width:1px,stroke-dasharray:6 4,color:#000000
+  classDef person fill:#003366,stroke:#003366,color:#FFFFFF
+  class LA,LB,LC,LP,LD,LE,LF,LG,HR,K1 local
+  class TA,IDP,KYC,SIG,CUS,PB,K2 synthetic
+  class C,A person
+  style OUT fill:#FFFFFF,stroke:#AE9966,stroke-dasharray:6 4
+  style BANK fill:#F7F9FB,stroke:#003366,stroke-width:2px
+  style EXT fill:#FFFFFF,stroke:#AE9966
+  style KEY fill:#FFFFFF,stroke:#DDE4EA

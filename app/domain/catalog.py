@@ -52,6 +52,13 @@ class SourceReference(DomainModel):
     document_digest: Sha256Hex
 
 
+class EligibilityRule(DomainModel):
+    """One published rule for who may hold a product. Stated as data, never decided from here."""
+
+    code: OpaqueId
+    text: ShortText
+
+
 class Product(DomainModel):
     """Approved, versioned product metadata (no free-form marketing claims).
 
@@ -73,6 +80,7 @@ class Product(DomainModel):
     risk_class: ShortText | None = None
     risk_summary: ShortText | None = None
     sources: tuple[SourceReference, ...] = ()
+    eligibility_rules: tuple[EligibilityRule, ...] = ()
     effective_from: date | None = None
     published_at: date | None = None
     terms_digest: Sha256Hex | None = None

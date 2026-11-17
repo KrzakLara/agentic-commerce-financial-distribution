@@ -1,409 +1,535 @@
-﻿# Secure Agentic Depot Onboarding
+﻿<div align="center">
 
-A modular-monolith FastAPI project.
+# Secure Agentic Investment Onboarding
 
-**Trust integration (local, synthetic):** an independent agent process can discover and verify a synthetic provider, get a
-customer's delegation, prepare an application, and reach a synthetic `OPENED` through signed provider callbacks. Run
-`.\.venv\Scripts\python.exe -m scripts.demo_trust_journey`. Status per area, with what is not real:
-[docs/agentic-commerce-integration.md](docs/agentic-commerce-integration.md). No regulated identification, no qualified signature and
-no real provider is involved.
+**Trust-first AI architecture for secure, human-authorized financial onboarding.**
 
-**Current status: final integration before the presentation.** Synthetic tax information, a
-knowledge-and-experience questionnaire, the versioned provider adapter and approved product claims are part of
-the real journey: [docs/final-integration.md](docs/final-integration.md). The target architecture is in
-[docs/technical-concept-2030.md](docs/technical-concept-2030.md), the evidence in
-[docs/presentation/evidence-summary.md](docs/presentation/evidence-summary.md). Scripted mode stays the default and
-needs no key. A real LLM agent sits behind an explicit flag, measured on the 20 fixed cases of ADR-09
-([docs/phase-05-evaluation.md](docs/phase-05-evaluation.md)).
+![Python 3.11 | 3.12](https://img.shields.io/badge/Python-3.11_%7C_3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![Pydantic v2](https://img.shields.io/badge/Pydantic-v2-E92063?logo=pydantic&logoColor=white)
+![SQLAlchemy 2 + SQLite](https://img.shields.io/badge/SQLAlchemy_2-SQLite-D71F00?logo=sqlalchemy&logoColor=white)
+![Claude Sonnet 5.5, optional](https://img.shields.io/badge/Claude_Sonnet_5.5-optional-191919?logo=anthropic&logoColor=white)
+![pytest](https://img.shields.io/badge/tested_with-pytest-0A9EDC?logo=pytest&logoColor=white)
+![Ruff](https://img.shields.io/badge/lint-Ruff-D7FF64?logo=ruff&logoColor=black)
 
-**Phase 04 - verified discovery, disclosures, attribution and human review.**
-Provider manifests are signed, versioned and expiring and are verified against the bank's own
-register (identity, domain, endpoint, capabilities, channels, no rollback); product terms and the
-attributed partner are bound into what the customer approves, so changed terms invalidate an old
-approval; a customer can ask for a person with the **"Speak to a person"** button
-(server-side customer session + CSRF), a synthetic compliance `REVIEW_REQUIRED` opens a durable
-review case, and a bank operator can re-evaluate with evidence - never override. The **P0 core is
-frozen** ([docs/phase-04-traceability.md](docs/phase-04-traceability.md#p0-core-freeze)). Three
-reproducible demo outcomes: **HAPPY**, **DENIED**, **MANUAL REVIEW**. Phases 00-03 (foundation,
-persistence, state machine, end-to-end flow, scoped agent authorization) are complete; see
-[docs/phase-04-traceability.md](docs/phase-04-traceability.md).
+[Demo](#demonstration) · [Architecture](#architecture) · [Workflow](#end-to-end-workflow) · [AI integration](#ai-integration) · [Evidence](#testing-and-evaluation) · [Decisions](#engineering-decisions) · [Getting started](#getting-started) · [Limitations](#current-scope-and-limitations)
 
-> **Everything here is a prototype with synthetic data.** KYC, compliance/AML, contract signing
-> and the depot provider are **MOCK**. The customer sign-in is a **development-only simulation**,
-> not identity verification. Agent authorization is a **controlled development implementation**,
-> not production OAuth 2.0 / FAPI 2.0. Nothing opens a real account or creates a legally valid
-> contract. No regulatory compliance is claimed.
+</div>
 
-## Case study objective
+An independent AI agent helps a customer find an investment product and start opening a securities account
+(a *depot*), **without ever holding the authority to complete it**. The agent can discover and verify the provider,
+read verified product facts, ask for a narrowly scoped delegation and prepare the application. Only the customer can
+authorize it, on the bank's own pages. Only deterministic bank policy can move the application forward. Only the
+depot provider's signed callback can mark it `OPENED`.
 
-A German fund provider wants AI agents to discover its products and start a securities-account
-(Wertpapierdepot) onboarding. The case study asks for a trustworthy, compliant, maintainable
-architecture plus a minimum convincing prototype. The approved decision is
-**ADR-001 v1.1 - L3 controlled agentic onboarding** (see the German terms below):
+The project is a working Python/FastAPI prototype with a persistent state machine, scoped and revocable agent
+credentials, signed provider messages, human review and an append-only audit trail. The AI agent runs either as a
+deterministic scripted agent or, behind explicit configuration, on Claude through the Anthropic SDK.
 
-> *LLM proposes; policy decides; customer authorizes; bank executes.*
+> [!IMPORTANT]
+> **Prototype with synthetic data.** Identity proofing, KYC/AML, contract signing, the depot provider and the trust
+> authority are labelled local stand-ins. **No real account is opened**, no legally valid contract is created, and no
+> regulatory compliance or certification is claimed. See [Current scope and limitations](#current-scope-and-limitations).
 
-An external AI agent (always untrusted) coordinates; deterministic bank-side policy and a
-licensed depot provider enforce. The agent can never confirm for the customer, approve KYC, sign a
-contract or mark a depot `OPENED`.
+---
 
-Architecture sources (not modified by this project): `TRUSTEQ_ADR_v1.1_FINAL.docx` and
-`TRUSTEQ_IMPLEMENTATION_PHASES_v2.md`.
+## Demonstration
 
-### German terms kept in this English prototype
+<div align="center">
 
-The case study is set in the German market. These German legal and industry terms are kept on
-purpose, each with its meaning:
+[![Result of the recorded run: OPENED, followed by the 25 audit events of that application in order](docs/assets/screenshots/opened-result-with-audit-trail.png)](docs/presentation/demo/TRUSTEQ_FullTrust_Demo_Fallback.mp4)
 
-| Term | Meaning |
+**[▶ Watch the full-trust onboarding demo (MP4, 1:43)](docs/presentation/demo/TRUSTEQ_FullTrust_Demo_Fallback.mp4)**
+
+<sub>Above: the result card at the end of the recorded journey. The application reached <code>OPENED</code> only after the
+mock depot provider's signed callback; the audit trail is read from that run's bank database.</sub>
+
+</div>
+
+The recording was made from the running application on a local machine. It shows, in order:
+
+1. **The customer's journey in Chrome on the bank's real pages:** sign-in at a separate local identity provider, the
+   agent-delegation approval, synthetic identity proofing, tax information, the knowledge-and-experience questions,
+   confirmation of the exact action, and authorization of the contract hash at a test signer.
+2. **A result card** with the ordered audit trail of that run.
+3. **The transcript of `scripts.demo_trust_journey`**, including the refused negative cases: a forged provider identity,
+   a revoked delegation, a failed identification and a declined signature.
+
+**How it was produced.** The browser is driven by a Playwright script
+([`scripts/demo_recording/record_fallback.cjs`](scripts/demo_recording/record_fallback.cjs)), and the agent is an
+independent, **deterministic** agent process ([`external_agent/`](external_agent/)). **No language model is called in
+this demo**; the Claude evaluation is separate ([AI integration](#ai-integration)). The result card and the transcript
+page are generated by the recording script from that run's own data; every other frame is a page of the running
+application. All regulated services in it are simulated.
+
+### Screenshots
+
+Frames taken directly from the recorded MP4, uncropped. Every provider, customer, identifier and result is synthetic;
+identity proofing, KYC, signing and the depot provider are local stand-ins. Click an image for full resolution.
+
+| **1 · Verified provider discovery** | **2 · The customer authorizes the AI agent** |
 |---|---|
-| Wertpapierdepot | securities account (custody account for securities) - what the onboarding opens |
-| Hausbank | the customer's relationship bank; here: a registered partner bank that distributes the account |
-| AG / eG / GmbH | German legal forms: stock corporation / registered cooperative / limited liability company |
-| KVG (Kapitalverwaltungsgesellschaft) | German investment management company under the KAGB (German Investment Code) |
-| BaFin | Federal Financial Supervisory Authority (Bundesanstalt für Finanzdienstleistungsaufsicht) |
-| GwG | German Anti-Money Laundering Act (Geldwäschegesetz) |
-| WpHG | German Securities Trading Act (Wertpapierhandelsgesetz) |
+| [![Transcript: the agent process discovers the bank's origin, verifies its metadata and Agent Card, reads the catalog and a verified fact](docs/assets/screenshots/01-verified-provider-discovery.png)](docs/assets/screenshots/01-verified-provider-discovery.png) | [![Bank page "Allow an AI agent to prepare your application" with who is asking, what the agent may do, and Allow / Do not allow](docs/assets/screenshots/02-customer-authorizes-ai-agent.png)](docs/assets/screenshots/02-customer-authorizes-ai-agent.png) |
+| The independent agent process verifies the bank's signed metadata and Agent Card and reads a verified product fact; the organisation identity is only asserted by a synthetic test authority. | On the bank's own page, the customer sees which agent is asking and the four things it may do, and can allow or refuse; the agent can never confirm, sign or decide a check. |
+| **3 · The customer confirms the application** | **4 · Signing is bound to the contract hash** |
+| [![Bank page "Confirm your account opening request", step 2 of 3, with the agent-prepared application summary](docs/assets/screenshots/03-customer-confirms-account-opening.png)](docs/assets/screenshots/03-customer-confirms-account-opening.png) | [![Contract review with package hash, document versions, partner attribution and the Authorize signing button](docs/assets/screenshots/04-contract-signing-authorization.png)](docs/assets/screenshots/04-contract-signing-authorization.png) |
+| The agent-prepared application is shown on a page that refuses the agent's credentials, so only the customer can confirm it. | The customer authorizes signing of exactly this package, identified by its SHA-256 hash and document versions; the test signer creates no legally valid signature. |
+| **5 · Forged identity and revoked delegation refused** | **6 · A failed identification goes to a person** |
+| [![Transcript: untrusted anchor and bad signature refused; a withdrawn delegation is refused with invalid_token and nothing advances](docs/assets/screenshots/05-forged-identity-and-revoked-delegation-refused.png)](docs/assets/screenshots/05-forged-identity-and-revoked-delegation-refused.png) | [![Transcript: identity result REJECTED, submission refused, MANUAL_REVIEW case opened, supervisor decides REJECT on the trusted console](docs/assets/screenshots/06-failed-identification-human-review.png)](docs/assets/screenshots/06-failed-identification-human-review.png) |
+| An untrusted or wrongly signed provider identity is refused, and a delegation the customer withdrew is rejected with `invalid_token` while the application stays where it was. | A rejected identity check blocks the agent's submission and opens a `MANUAL_REVIEW` case; a supervisor can reject it, but no human decision can open a depot. |
 
-All institutions, people, places (Sampletown, Example Valley), registry references and domains
-in the prototype are fictional.
+Full transcript: [`TRUSTEQ_Demo_Transcript.txt`](docs/presentation/demo/TRUSTEQ_Demo_Transcript.txt) ·
+Run it yourself: [Getting started](#getting-started).
 
-## The happy path in one picture
+---
 
-```text
-OPERATOR (trusted dev bootstrap) -> agent gets ONE narrow token: create_draft, 1 application, 1 customer
-AGENT (untrusted)            BANK                              CUSTOMER           MOCK PROVIDER
-discover provider/product -> verified fixture metadata (public)
-create application        -> DRAFT; bootstrap consumed; onboarding + status tokens (shown once)
-request handoff           -> one-time challenge + action digest        [onboarding token]
-        -------- link (a pointer, not an authorization) -------->  sign in (SIMULATED,
-                                                                    server-side session), review,
-                                                                    confirm exact action (+CSRF)
-                          <- verified: challenge, identity, digest, catalog, mandate
-                          MOCK KYC -> MOCK compliance -> MOCK contract recorded
-submit (after consent)    -> policy gate on stored evidence -> hand-over   [onboarding token]
-                                                                    ------ signed "opened" ------>
-                          <------------------------------------------------ confirmation
-                          OPENED + bootstrap/onboarding grants + tokens revoked + audit
-read status               -> OPENED (read-only status token; never claimed by the agent)
-submit again              -> 401 invalid_token (privileges gone)
+## The problem
+
+AI agents are starting to act for consumers: comparing products, filling in forms, starting purchases. In financial
+services, that runs into hard constraints:
+
+- **Identity and consent are personal acts.** Identification, consent and contract signature belong to the customer,
+  not to software acting for them.
+- **Agents are untrusted and steerable.** A language model can be prompt-injected, can hallucinate a fee or a
+  guarantee, and can be impersonated by another client.
+- **Wrong statements are incidents.** A misquoted fee or an invented "guaranteed return" is a regulatory problem, not
+  a UX bug.
+- **The account exists only when the licensed institution says so.** No agent, chat message or synchronous API reply
+  can stand in for that.
+
+**The question:** how can an independent AI agent help a customer discover investment products and initiate
+securities-account onboarding without bypassing authentication, authorization, consent or the bank's controls?
+
+## The solution
+
+The design follows one principle, enforced in code rather than in prompts:
+
+<div align="center">
+
+**LLM proposes. Policy decides. Customer authorizes. Bank executes.**
+
+</div>
+
+**Controlled Level 3 autonomy.** On an L0 to L4 scale of agent autonomy, the agent operates at L3: it prepares,
+orchestrates and tracks the onboarding. Every binding act (authentication, tax and suitability data, confirmation of
+the exact action, contract signature) happens in the bank's own channel. Full autonomy (L4) would need a legal basis
+for delegated identification, consent and signature that does not exist today.
+
+**A deterministic, bank-controlled backend.** Every state change goes through an explicit transition table in which
+each edge names the authority allowed to take it. The external agent **appears on no edge**: it can only request
+things. The policy gate reads stored evidence (consent receipts, disclosure acknowledgements, check results), never
+model output. The same inputs and policy version always give the same decision, which can be reproduced and audited.
+
+**Separating untrusted from trusted components.**
+
+| Untrusted | Trusted |
+|---|---|
+| The external agent process and any language model behind it | The bank's API edge, authorization service, policy engine and state machine |
+| Agent-supplied text, product names and requests | Verified, versioned product facts and the bank's own register |
+| Anything the agent claims about the customer | The customer's authenticated session and digest-bound consent receipts |
+| An agent's "the account is open" | The depot provider's signed, fresh, idempotent confirmation |
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+  subgraph EXT["Untrusted zone"]
+    direction LR
+    AG["External AI agent<br/>scripted or Claude-driven"]
+    CU["Customer<br/>browser"]
+  end
+
+  TA["Synthetic trust authority<br/>signed provider discovery"]
+
+  subgraph BANK["Bank-controlled core: FastAPI modular monolith"]
+    direction TB
+    EDGE["Agent surface<br/>REST v1, A2A, Agent Card"]
+    GUARD["Communication guard<br/>verified facts only"]
+    AUTH["Scoped authorization<br/>hashed tokens, DPoP"]
+    CHAN["Customer channel<br/>OIDC + PKCE, CSRF"]
+    POL["Deterministic policy engine"]
+    SM["Persistent state machine"]
+    REV["Human review"]
+    AUD["Append-only audit"]
+    DB[("SQLAlchemy + SQLite")]
+    ADP["Provider ports and<br/>versioned adapters"]
+  end
+
+  subgraph SIM["Simulated services"]
+    direction LR
+    IDP["Local OIDC<br/>provider"]
+    CHK["Identity proofing,<br/>KYC, compliance"]
+    SIG["Test signer<br/>no QES"]
+    DEP["Mock depot<br/>provider"]
+  end
+
+  AG -->|"verifies trust chain"| TA
+  AG --> EDGE
+  CU --> CHAN
+  EDGE --> GUARD
+  EDGE --> AUTH
+  AUTH --> POL
+  CHAN --> POL
+  POL --> SM
+  SM --> REV
+  SM --> AUD
+  AUD --> DB
+  SM --> DB
+  SM --> ADP
+  ADP --> IDP
+  ADP --> CHK
+  ADP --> SIG
+  ADP --> DEP
+  DEP ==>|"signed callback:<br/>only path to OPENED"| SM
 ```
 
-Details: [docs/onboarding-flow.md](docs/onboarding-flow.md) (flow, handoff, recovery) and
-[docs/authorization.md](docs/authorization.md) (tokens, scopes, lifecycle).
+**Trust boundaries.** The repository models five zones: the customer (T0a), the external agent (T0b), the API edge
+(T1), the trusted core (T2) and the regulated providers (T3). Every message that crosses into the core is checked
+against keys and registers the bank holds itself, never against anything the message carries. The customer's identity
+comes from the login, the agent's from its registered key, and the provider's from the bank's register; none of them
+can stand in for another. Details: [docs/trust-boundaries.md](docs/trust-boundaries.md).
 
-## Architecture summary
+**Main architectural decisions**
 
-* **Modular monolith** with ports/adapters; REST is the canonical API (MCP/A2A are optional
-  later adapters, never the core).
-* **Trust zones** T0a customer, T0b external agent, T1 API edge, T2 trusted core, T3 regulated
-  providers. See [docs/trust-boundaries.md](docs/trust-boundaries.md).
-* **Internal domain models** (`app/domain`) are separate from **external API schemas**
-  (`app/api/schemas`) and from **ORM tables** (`app/repositories/orm.py`).
-* **Persistent state machine** with an explicit transition table and per-edge authority
-  ([docs/state-machine.md](docs/state-machine.md)); atomic transitions, optimistic locking,
-  database triggers as defence in depth ([docs/database.md](docs/database.md)).
-* **Deterministic policy gate** (`app/services/policy.py`): submission needs stored evidence of
-  consent, disclosure acknowledgement and passed checks - no LLM output is read.
-* **Scoped agent authorization** (`app/services/authorization_service.py`, `app/api/auth.py`):
-  enforced at the API and service boundary, never by the agent's own instructions
-  ([docs/authorization.md](docs/authorization.md)).
-* The **agent package** can only talk to the bank over the public REST API via one narrow tool
-  contract. See [docs/architecture.md](docs/architecture.md) and
-  [docs/api-contracts.md](docs/api-contracts.md).
+- **Modular monolith with ports and adapters.** State, evidence and audit are written in one transaction; every
+  external party sits behind a port in [`app/integrations/ports.py`](app/integrations/ports.py).
+- **REST is the canonical interface.** An A2A 1.0 subset (Agent Card and JSON-RPC) is an additional adapter over the
+  same services, not a second core.
+- **Internal domain models, API schemas and ORM tables are separate** (`app/domain`, `app/api/schemas`,
+  `app/repositories`), so an external contract change cannot silently change internal rules.
+- **Database triggers as defence in depth.** Append-only evidence tables, frozen confirmations and non-revivable
+  revocations are enforced in SQLite even against raw SQL ([docs/database.md](docs/database.md)).
+
+More: [architecture](docs/architecture.md) · [state machine](docs/state-machine.md) ·
+[authorization](docs/authorization.md) · [API contracts](docs/api-contracts.md) ·
+[diagrams](docs/diagrams/README.md)
+
+---
+
+## Key features
+
+| Feature | What it does | Engineering value |
+|---|---|---|
+| **Scripted and LLM agent modes** | A deterministic `ScriptedCustomerAgent` (default) and an `LlmCustomerAgent` on Claude implement the same interface and reach the bank through the same six-tool REST gateway | The model is swappable; bank-side guarantees do not depend on which agent runs |
+| **Independent agent process** | `external_agent/` runs as its own process, imports nothing from the bank and talks to it only over HTTP | Proves the controls hold across real process boundaries, not just inside one codebase |
+| **Signed provider discovery** | Provider manifests are signed, versioned and expiring and are checked against the bank's own register; the agent verifies the bank's metadata through a trust chain | Made-up providers, rollbacks, tampered or expired manifests are refused with reason codes |
+| **Scoped agent permissions** | Opaque tokens stored as SHA-256 hashes, with issuer, audience, expiry, `jti`, per-operation scopes and resource binding; single-use bootstrap; DPoP-bound delegated tokens in the full-trust profile | Least privilege per application; a stolen read-only token cannot submit; privileges are revoked at terminal states |
+| **Deterministic policy engine** | Versioned rules decide applicability and gates from stored evidence; each decision records its inputs and policy version | Reproducible, testable decisions; prompt injection cannot change state |
+| **Persistent workflow state machine** | Explicit transition table with per-edge authority, atomic transitions and optimistic locking | No `set_status`; illegal transitions return `409`, wrong authority `403` |
+| **Customer consent and authorization** | Bank-hosted pages with server-side sessions and CSRF; the customer confirms an action digest that binds provider, product, channel, terms and disclosure versions | Changed terms invalidate an old approval; an agent cannot confirm for the customer |
+| **Verified product communication** | For the bank's own answers, a model may only propose fact identifiers; the bank verifies them and renders every sentence from versioned facts and fixed templates | No model prose reaches the customer; invented fees or guarantees cannot be released |
+| **Human escalation** | "Speak to a person", durable review cases, and a trusted operator console with a fixed decision set (`RE_EVALUATE`, `RESUME`, `REJECT`, `ACKNOWLEDGE`); no "approve" | People handle exceptions without becoming a way around KYC, consent or the provider |
+| **Versioned provider adapters** | The bank requests the newest supported API version and falls back only when both the provider and the bank's compatibility policy allow it | No silent downgrade attack; deprecations are handled explicitly |
+| **Signed callbacks** | Depot confirmation is HMAC-SHA256 signed with a freshness window and replay protection; proofing and signing results are JWTs verified against pinned keys | Forged, replayed, stale or wrong-application callbacks change nothing |
+| **Audit trail** | Append-only audit events for every transition, consent, policy decision, contract hash and refusal | Every outcome can be traced to the actor, evidence and policy version behind it |
+| **Negative security tests** | Prompt-injected agents, forged credentials, manifest attacks and callback forgery, plus hand-picked mutation testing of the security controls | Controls are shown to fail closed, and the tests are shown to notice when a control is removed |
+| **Recovery and persistence** | Idempotency keys, restart tests, resumable schema upgrades (schema v6) | A server restart preserves both the outcome and the revocations |
+
+---
+
+## End-to-end workflow
+
+The happy path in the full-trust profile (as run by `scripts.demo_trust_journey`):
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor C as Customer
+  participant A as AI agent (untrusted)
+  participant B as Bank API and policy
+  participant P as Simulated providers
+  A->>B: Discover and verify provider, read verified product facts
+  A->>B: Request a scoped delegation (DPoP)
+  C->>B: Sign in on the bank page (OIDC + PKCE), approve exact scopes
+  A->>B: Prepare application (DRAFT), request customer confirmation
+  C->>P: Identity proofing (synthetic)
+  P-->>B: Signed proofing result
+  C->>B: Tax information, knowledge questions, confirm exact action
+  B->>B: Policy decision, mock KYC and compliance
+  C->>P: Authorize signing of the contract package hash (test signer)
+  P-->>B: Signed signature result bound to the package hash
+  A->>B: Submit
+  B->>B: Gates: signature, package integrity, policy
+  B->>P: Versioned submission to the depot provider
+  P-->>B: Signed confirmation
+  B->>B: OPENED, tokens revoked, audit recorded
+  A->>B: Read status: OPENED (read-only)
+```
+
+State sequence: `DRAFT → AWAITING_AUTHORIZATION → AUTHORIZED → KYC_PENDING → COMPLIANCE_PENDING → CONTRACT_PENDING →
+SUBMITTED_TO_DEPOT_PROVIDER → OPENED`.
+
+**Refused actions.** A prompt-injected agent that tries to confirm for the customer, set `OPENED`, submit early, use a
+stolen or forged token, name its own commission recipient, or load a tampered manifest is refused with a `4xx` and a
+reason code. The refusal is audited, and the application **stays in its previous state**; it is not rejected, so the
+real customer can continue (`scripts.demo_denied`).
+
+**Human review.** A compliance result of `REVIEW_REQUIRED`, a failed identity proofing or a failed signature parks the
+application in `MANUAL_REVIEW`, which remembers the interrupted step. The agent only sees a generic state, and the
+customer gets the same neutral acknowledgement in every case. An operator can re-run the deterministic check with new
+evidence (`RE_EVALUATE`), resume, or reject (`REJECT` requires a supervisor). No operator decision leads to `OPENED`
+(`scripts.demo_manual_review`).
+
+**Why an AI agent cannot mark an account `OPENED`.** The only edge into `OPENED` starts at
+`SUBMITTED_TO_DEPOT_PROVIDER` and belongs to the authority `DEPOT_PROVIDER_CONFIRMATION`. That authority is assigned by
+trusted server code after verifying a signed, fresh, application-bound provider callback; it is never read from a
+request. No agent tool, agent token or operator decision maps to it. This is enforced in
+[`app/domain/workflow.py`](app/domain/workflow.py) and pinned by tests such as
+`test_the_external_agent_can_take_no_edge_at_all`.
+
+Details: [onboarding flow](docs/onboarding-flow.md) · [identity and delegation](docs/identity-and-delegation.md) ·
+[integrated trust journey](docs/agentic-commerce-integration.md)
+
+---
+
+## AI integration
+
+Claude is integrated through the official Anthropic Python SDK (`anthropic==0.125.0`, optional extra `llm`). The model
+is pinned to `claude-sonnet-5-5`. Four modes are kept strictly apart:
+
+| Mode | What runs | Needs a key | Used by |
+|---|---|---|---|
+| **1. Scripted agent (default)** | `ScriptedCustomerAgent` and the external agent process: deterministic, no model | No | All offline demos, the recorded video, the test suite |
+| **2. Real LLM agent (opt-in)** | `LlmCustomerAgent`: Claude proposes tool calls; the runtime validates and executes them | Yes | `scripts.demo_llm`, `scripts.eval_llm --mode llm` |
+| **3. LLM evaluation** | Fixed, pre-registered datasets scored deterministically; no model grades a model | Only for live runs | `scripts.eval_live_llm`, `scripts.eval_llm`, `scripts.eval_communication` (offline, fake client) |
+| **4. Bank-side authorization** | Token, scope, ownership, state-machine and policy checks; no model involved | No | Every request, in every mode |
+
+**Tool boundary of the LLM agent.** The model sees six tools, each mapped to one public REST call and checked by the
+bank:
+
+| Tool | REST call | Bank decides |
+|---|---|---|
+| `discover_provider` | `GET /v1/providers/{id}/manifest` | Only a verified, currently valid provider answers |
+| `get_official_product` | `GET /v1/products` | Only approved, versioned terms |
+| `create_draft` | `POST /v1/applications` | Bootstrap token, its customer, idempotency |
+| `request_handoff` | `POST /v1/applications/{id}/handoff` | Onboarding token, ownership, state |
+| `get_generic_status` | `GET /v1/applications/{id}` | Read-only token; coarse state only |
+| `submit_after_consent` | `POST /v1/applications/{id}/submit` | Policy gate on stored consent, checks and mandate |
+
+**Restrictions, enforced outside the prompt:**
+
+- A strict tool allowlist with typed Pydantic arguments; `customer_ref` and idempotency keys are bound by the runtime,
+  not by the model.
+- There is no tool to consent, confirm, sign, approve KYC or open an account.
+- The gateway holds the bearer tokens and never returns them to the model; narrative provider text is not forwarded.
+- Bounded execution: at most 8 model requests per run, 4,096 output tokens per request, a 60 s timeout and 1 SDK retry.
+- An API error, refusal, truncation or malformed response ends the run safely. There is no silent fallback to another
+  model or to the scripted agent.
+
+**Guarded product answers.** On the question-answering path (`/v1/agent/questions` and the A2A skill
+`product-question`), the model gets only the two read-only tools and must return a structured proposal of fact
+identifiers. `CommunicationGuard` checks every claim against verified facts, and the bank writes the answer itself.
+Requests to act ("sign for me", "open the depot now") are refused with a fixed reason.
+
+**Enabling it.** Set `TRUSTEQ_AI_EXECUTION_MODE=llm`, `TRUSTEQ_ENABLE_LLM=true`, `TRUSTEQ_LLM_PROVIDER=anthropic` and
+provide `ANTHROPIC_API_KEY`. A missing key or SDK fails closed.
+
+Details: [agent evaluation report](docs/phase-05-evaluation.md) · [regulated communication](docs/regulated-communication.md)
+
+---
+
+## Testing and evaluation
+
+Every result below is labelled with its date and the code it ran on. Different kinds of evidence are **not** added up
+into one success rate.
+
+### Automated test suite
+
+| Check | Result | Provenance |
+|---|---|---|
+| Full suite, `python -m pytest` | **1,488 passed**, 0 failed | 2026-11-18, on this repository's published tree, Windows 10, Python 3.12.7, 287 s. The same application code also passed 1,488 of 1,488 on 2026-11-08 and 2026-11-17 |
+| Ruff lint and format | Clean | 2026-11-18, same tree |
+
+The suite runs offline against in-memory or temporary SQLite databases and real HTTP-level clients. Model calls are
+replaced by fake clients; no test calls a paid API.
+
+| Category | Representative test modules |
+|---|---|
+| **Unit**: domain rules, policy, state machine | `test_domain`, `test_state_machine`, `test_policy`, `test_appropriateness`, `test_tax_information` |
+| **Integration**: API, persistence, providers | `test_applications_api`, `test_persistence`, `test_restart_persistence`, `test_recovery`, `test_provider_integration`, `test_schema_migration_v6` |
+| **Security and negative cases** | `test_agent_authorization`, `test_f1_customer_authorization`, `test_request_human_security`, `test_verified_discovery`, `test_provider_callback`, `test_communication_boundary`, `test_trust_mutation_closure` |
+| **End-to-end** | `test_onboarding_e2e`, `test_trust_journey`, `test_demo_integrated`, `test_demo_scripts_phase04` (run the demos as subprocesses) |
+| **LLM adapter (mocked model)** | `test_llm_agent`, `test_llm_evaluation`, `test_live_llm_eval`, `test_agent_trusted_claims` |
+
+### Browser, mutation and model evaluation
+
+| Evidence | Result | Provenance |
+|---|---|---|
+| **Browser end-to-end** (Playwright, Chrome / Chromium) | 18 of 18 checks (Chrome, visible) and 20 of 20 (Chromium, headless), both ending in `OPENED` | 2026-11-07, clean install ([demo README](docs/presentation/demo/README.md)) |
+| **Mutation testing**, full harness | 55 of 55 hand-picked security mutants killed | 2026-11-04, commit `00dfaf2` ([security and reliability report](docs/phase-06-security-reliability.md)) |
+| **Mutation testing**, trust integration | 19 of 22 killed; 3 survivors closed by 12 added tests, then 3 of 3 killed | 2026-11-06 ([integration evidence](docs/integration-evidence.md)) |
+| **Offline communication evaluation** (fake model) | 84 of 84 cases | [communication-offline-results.json](docs/evaluation/communication-offline-results.json) |
+| **Live LLM evaluation**, final answer pipeline | 19 of 19 pre-registered questions answered safely and as pre-registered; 0 of 4 injections followed; 0 database changes across 30 tables; estimated cost USD 0.28 | 2026-11-08, `claude-sonnet-5-5`, dataset frozen by SHA-256 ([report](docs/evaluation/final-live-llm/README.md)) |
+| **Live LLM evaluation**, earlier onboarding agent with write tools (historical) | 20 of 20 fixed cases | 2026-11-04, commit `4404a79`; a different, earlier system ([report](docs/phase-05-evaluation.md)) |
+
+**How to read these numbers.** The mutants were chosen by hand, so 55 of 55 is not a mutation score. With 19 live
+runs, 19 of 19 is still compatible with a true failure rate of up to 17.6 % (95 % Clopper-Pearson), and the live run
+did not stress the guard, because the model proposed no unsupported claim. Passing tests show that specific controls
+work as designed on synthetic data; they do not show that the system is safe in general, and they say nothing about
+legal compliance. Not done: external penetration test, load test, SAST, DAST, dependency scanning or conformance suites.
+
+---
+
+## Engineering decisions
+
+All 26 decisions, with alternatives, trade-offs and evidence, are in the
+[decision register](docs/decision-register.md).
+
+| Decision | Why it was chosen | Trade-off |
+|---|---|---|
+| **Controlled L3 instead of fully autonomous L4** | The highest level that needs no new legal basis: the agent takes over coordination, while legally personal acts stay with the customer | A channel break: the customer leaves the agent for the bank's pages at each binding step, which costs convenience and probably completion rate |
+| **Deterministic policy instead of an LLM decider** | Regulated decisions must be reproducible and explainable; a model is probabilistic and can be steered by injected text | Rules must be written for every case; anything unforeseen goes to a person instead of being judged |
+| **Modular monolith instead of microservices** | State, evidence and audit share one transaction, so there is no distributed partial failure inside the core | One node and one database; components cannot scale or fail independently until ports become service boundaries |
+| **Versioned adapters instead of vendor-specific integrations** | Providers will deprecate versions; a two-sided fallback permission prevents downgrade attacks | A compatibility policy to maintain |
+| **Verified structured claims instead of filtered model text** | A model can at worst pick the wrong verified fact, never invent one | Less fluent answers; conservative refusals when no approved fact exists |
+| **Human review with a fixed decision set instead of "approve"** | People handle exceptions without becoming a bypass of KYC, consent or the provider | Staffed queues in production; unclear cases take longer |
+| **Synthetic stand-ins behind real ports instead of claimed integrations** | Real protocols, persistence and failure handling with only the counterparties simulated, labelled in the data (`mock=true`, `TEST_NO_LEGAL_EFFECT`) | Nothing proves behaviour against a real regulated provider yet |
+| **Security and auditability over simplicity** | Hashed tokens, triggers, signed callbacks and append-only evidence make the guarantees testable | More code, more migrations (schema v6) and slower iteration |
+
+---
 
 ## Technology stack
 
-Python 3.11 / 3.12 (developed on 3.12), FastAPI, Pydantic v2 + Pydantic Settings,
-SQLAlchemy 2.x (SQLite), Uvicorn, httpx, pytest, ruff. Dependencies are constrained in
-`pyproject.toml`. The optional LLM agent adds the pinned `anthropic` SDK; nothing else uses a model
-or an API key.
+| Area | Technologies |
+|---|---|
+| **Backend** | Python 3.11 / 3.12, FastAPI, Uvicorn |
+| **AI / LLM** | Anthropic Python SDK `0.125.0`, Claude Sonnet 5.5 (`claude-sonnet-5-5`), strict tool schemas, structured output; optional |
+| **Database** | SQLAlchemy 2.0, SQLite, versioned schema upgrades, triggers |
+| **Validation** | Pydantic v2, Pydantic Settings |
+| **API / HTTP** | REST (OpenAPI via FastAPI), A2A 1.0 JSON-RPC subset, httpx |
+| **Security** | `joserfc` (JWS / JWT / JWK), `cryptography`, Authlib (local OIDC provider), HMAC-SHA256, DPoP, PKCE, CSRF tokens |
+| **Testing** | pytest, targeted mutation harness, Playwright (browser demo) |
+| **Development tools** | Ruff, PowerShell scripts (`setup.ps1`, `check.ps1`), Node.js for the browser demo, Flask (local OIDC provider) |
+
+---
+
+## Getting started
+
+**Prerequisites:** Windows 10/11 with PowerShell and Python **3.11 or 3.12**. No API key is needed.
+
+```powershell
+git clone https://github.com/KrzakLara/agentic-commerce-financial-distribution.git
+cd agentic-commerce-financial-distribution
+py -3.12 -m venv .venv
+$py = ".\.venv\Scripts\python.exe"
+& $py -m pip install -e ".[dev]"
+
+& $py -m scripts.demo_trust_journey   # full journey + negative cases, offline
+& $py -m pytest                       # full test suite, offline
+```
+
+`demo_trust_journey` runs the bank, the trust authority, the OIDC provider and the independent agent as separate
+local processes and ends with `RESULT: PASS`. Every demo uses a throw-away database and no network beyond `127.0.0.1`.
+
+| Task | Command |
+|---|---|
+| Start the API (Swagger UI at `http://127.0.0.1:8000/docs`) | `& $py -m uvicorn app.main:app --reload` |
+| Other offline demos: happy path, refused attacks, human review | `& $py -m scripts.demo_happy`, `demo_denied`, `demo_manual_review` |
+| Offline evaluation of the guarded answers (fake model) | `& $py -m scripts.eval_communication` |
+| Mutation testing of the security controls | `& $py -m scripts.security_mutations` |
+| Lint and format check | `& $py -m ruff check .` and `& $py -m ruff format --check .` |
+| One real Claude run (needs `ANTHROPIC_API_KEY` in `.env`; billed) | `& $py -m scripts.demo_llm` |
+
+An Anthropic API key is needed **only** for real model runs. Put it in a local `.env` file, which is git-ignored; never
+put it in `.env.example` or a commit.
+
+**[Technical reference →](docs/TECHNICAL_REFERENCE.md)** Manual step-by-step walkthrough of the API, operator console,
+all LLM and evaluation commands, configuration, and the detailed implemented / simulated / target matrix.
+
+---
+
+## Current scope and limitations
+
+### Implemented and tested
+
+- FastAPI routes, SQLAlchemy persistence, the state machine with per-edge authority, idempotency and recovery
+- Scoped, hashed, revocable agent tokens with resource binding
+- Server-side customer sessions with CSRF protection on the bank's pages
+- Deterministic policy gates with versioned rules and recorded inputs
+- Signed manifest and callback verification, the versioned provider adapter, human review cases and the append-only
+  audit
+- The guarded communication pipeline, scripted and LLM agent modes, and the evaluation runners
+- **Local protocol implementations, verified only against local components:**
+  - OIDC authorization code flow with PKCE against a separate local Authlib provider
+  - DPoP-bound delegated tokens
+  - JWS-signed provider metadata with a trust chain, key rotation and revocation
+
+### Simulated in the prototype
+
+- **Customers, products, partner banks and the institution:** all synthetic, on `.example` domains.
+- **Identity proofing, KYC, AML and compliance:** mock results, labelled `mock=true` and `regulatory_evidence=false`.
+- **Contract signing:** a test signer at level `TEST_NO_LEGAL_EFFECT`, not a qualified electronic signature.
+- **Depot provider:** a mock with a shared-secret HMAC callback.
+- **Trust authority:** synthetic; it vets nobody.
+- **Default-profile customer sign-in:** a development simulation that anyone with the handoff values can use. The OIDC
+  login applies only in the opt-in full-trust profile.
+- **Agent tokens in the default profile:** bearer tokens issued by a trusted development CLI, without DPoP or mTLS.
+  This is not production OAuth 2.0 or FAPI 2.0.
+
+**No real financial account is opened**, and no legally valid contract is created.
+
+### Future production requirements
+
+- A bank's identity provider, and regulated identity proofing (eID, VideoIdent or EUDI wallet)
+- Contracted KYC/AML, a QTSP for qualified signatures, and a real depot provider over mTLS
+- A FAPI 2.0 authorization server with sender-constrained tokens for all agent access
+- Membership in a real trust federation and an authoritative licence lookup
+- High-availability database, rate limiting, tamper-evident audit, and an external security assessment
+- Legal and compliance review. **No regulatory compliance or certification is claimed.**
+
+Open findings (for example, no rate limiting and an audit that is append-only but not tamper-evident) are tracked in
+[docs/robustness-evidence.md](docs/robustness-evidence.md).
+
+---
+
+## Future improvements
+
+1. **Real partner integrations** behind the existing ports: a depot provider sandbox, KYC/AML, identity proofing and a
+   QTSP, starting with whichever partner can provide sandbox credentials.
+2. **Production identity:** connect the OIDC boundary to a bank identity provider, and replace development bearer
+   tokens with a FAPI 2.0 authorization server and sender-constrained tokens.
+3. **Security hardening:** rate limits on unauthenticated endpoints, a tamper-evident audit chain, SAST, DAST and
+   dependency scanning in CI, and an external penetration test.
+4. **Observability:** structured logs exist; add metrics, tracing and monitoring of model behaviour in production.
+5. **Operational readiness:** PostgreSQL with high availability, a durable workflow engine, case management with SSO
+   and four-eyes review, and a customer-facing case view.
+6. **Evaluation at scale:** repeated live runs, more models and languages, and multi-turn conversations.
+
+The 2030 target architecture is described in [docs/technical-concept-2030.md](docs/technical-concept-2030.md).
+
+---
 
 ## Project structure
 
-```text
-Trusteq/
-├── app/
-│   ├── main.py            # create_app() + ASGI entry point
-│   ├── container.py       # composition root: catalog + MOCK providers + clock
-│   ├── api/               # routers, middleware, errors, schemas, bearer auth, customer session, HTML pages
-│   │   └── routes/        # health, catalog, applications, customer, internal (provider callback)
-│   ├── core/              # config, logging, exceptions
-│   ├── domain/            # typed contracts (grants, tokens, sessions), state-machine rules, visibility
-│   ├── services/          # Application/Onboarding/Authorization/CustomerSession services, policy gate
-│   ├── repositories/      # ORM models, repositories, unit of work (SQLAlchemy/SQLite), schema upgrade
-│   ├── integrations/      # ports, MOCK adapters, verified catalog fixture, REST agent gateway + token store
-│   └── agents/            # ScriptedCustomerAgent and LlmCustomerAgent (both untrusted zone T0b)
-├── tests/                 # pytest suite (+ fixtures/schema_v2.sql, schema_v3.sql for the upgrade tests)
-├── docs/                  # architecture, authorization, flow, trust boundaries, API, state machine, database, Phase 04 traceability, Phase 05 evaluation + its result files
-├── scripts/               # setup.ps1, check.ps1, demo_happy/denied/manual_review.py, demo_llm.py, eval_llm.py + llm_eval_cases.py, dev_auth.py, dev_operator.py, security_mutations.py
-├── .env.example  .gitignore  pyproject.toml  README.md
-```
+| Path | Contents |
+|---|---|
+| [`app/api/`](app/api/) | FastAPI routes, request/response schemas, bearer auth, customer sessions, bank-hosted pages |
+| [`app/domain/`](app/domain/) | Workflow transition table, grants, consent, review and audit models |
+| [`app/services/`](app/services/) | Policy engine, authorization, delegation, onboarding, review, `CommunicationGuard` |
+| [`app/repositories/`](app/repositories/) | SQLAlchemy ORM, repositories, unit of work, schema upgrades |
+| [`app/integrations/`](app/integrations/) | Ports, mock adapters, signed callbacks, JOSE tools, REST agent gateway |
+| [`app/agents/`](app/agents/) | Scripted agent, Claude agent, answer proposer |
+| [`external_agent/`](external_agent/) | Independent agent process that talks to the bank over HTTP only |
+| [`local_services/`](local_services/) | Synthetic trust authority, local OIDC provider, test proofing and signer |
+| [`scripts/`](scripts/) | Demos, evaluation runners, mutation harness, development CLIs, setup and check |
+| [`tests/`](tests/) | pytest suite |
+| [`docs/`](docs/) | Architecture, decisions, evaluation reports, diagrams, demo, [technical reference](docs/TECHNICAL_REFERENCE.md) |
 
-## Requirements
+Further reading: [decision register](docs/decision-register.md) · [technical concept](docs/technical-concept-2030.md) ·
+[regulatory policy matrix](docs/regulatory-policy-matrix.md) · [integration evidence](docs/integration-evidence.md)
 
-* Windows 10/11 with PowerShell
-* Python **3.11 or 3.12** (the `py` launcher is used below; 3.13+ is not supported)
-* A few MB of free disk space (the demo and tests use small temporary SQLite files)
+---
 
-## Installation (PowerShell)
+## Engineering ownership
 
-From the project folder:
+This project was researched, architecturally directed and organized into development phases by the author, and built
+with AI-assisted engineering tools, including Claude Code. Not every line was written by hand.
 
-```powershell
-cd C:\Users\larak\Desktop\Projektici\Trusteq
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-```
+The author's contribution lies in the problem framing, the architecture and its trust boundaries, the phase plan, and
+the documented engineering decisions: 26 entries, each with alternatives, trade-offs and the evidence in code. The
+claims in this README were checked against the source code, the tests and the stored evaluation reports.
 
-(Using `.\.venv\Scripts\python.exe` directly means you do not need to activate the venv, so no
-execution-policy change is required.) Shortcut: `powershell -ExecutionPolicy Bypass -File scripts\setup.ps1`
-
-## Run the demos (recommended first step)
-
-```powershell
-.\.venv\Scripts\python.exe -m scripts.demo_integrated     # INTEGRATED: discovery ... tax, assessment ... OPENED
-.\.venv\Scripts\python.exe -m scripts.demo_happy           # HAPPY: ... -> OPENED
-.\.venv\Scripts\python.exe -m scripts.demo_denied          # DENIED: refused, audited, state unchanged
-.\.venv\Scripts\python.exe -m scripts.demo_manual_review   # MANUAL REVIEW: case, request-human, operator
-```
-
-All are offline (no LLM key, no network beyond `127.0.0.1`), deterministic, use their own
-throw-away database, print no token, challenge or key, and exit non-zero if any check fails. The last three are the
-original P0 scenarios: they switch the tax and assessment step off, and say so.
-
-**2-3 minute presentation** (each demo runs in seconds; the times below are speaking time): run
-`demo_happy --no-restart` (about 40 s: agent drafts, customer
-confirms on the bank page, provider confirms, `OPENED`, privileges revoked); then `demo_denied`
-(about 30 s: show sections 2 "prompt-injected agent" and 4 "manifests never load", and the line
-"NOT REJECTED"); then `demo_manual_review` (about 60 s: show sections 2-3 "generic state
-ACTION_REQUIRED", 4 the generic acknowledgement and 5 the operator console with the refused
-decisions and the re-evaluation as attempt 2). Close on the transition list in section 7:
-`MANUAL_REVIEW -> COMPLIANCE_PENDING by OPERATOR`, `OPENED by DEPOT_PROVIDER_CONFIRMATION`.
-
-**For the live presentation, use
-[docs/presentation/phase-07-demo-runbook.md](docs/presentation/phase-07-demo-runbook.md):** the timed
-2-minute walkthrough with the customer page in a browser, speaker notes, the security disclosure, reset,
-troubleshooting and the offline fallback.
-
-### What `demo_happy` shows
-
-It creates a throw-away database in your temp folder, starts the real server, and plays four
-separate actors (agent, customer, bank, MOCK provider): the bank's trusted bootstrap grant,
-discovery, draft (returning the application-bound tokens), handoff, customer confirmation,
-MOCK checks, submit, the provider's signed confirmation, `OPENED` and the revoked onboarding
-privileges - plus what the agent tries that must fail: confirming its own handoff, submitting
-with a read-only token, reusing its bootstrap grant, reading another agent's application, a forged
-token, the old self-asserted `X-Dev-Actor-Id` header, an unsigned provider callback, and acting
-after `OPENED`. Then it restarts the server to prove the result and the revocation persisted. It
-prints ids, scopes and states, never a token, the one-time challenge or any other credential,
-deletes its temp data, and exits `0` only if every check holds. Options: `--keep`,
-`--no-restart`. It never touches `trusteq.db`.
-
-`demo_denied` shows made-up providers, fabricated or ended partner channels and a self-chosen
-commission recipient being refused (`422`), a prompt-injected agent that tries to confirm for the
-customer, set `OPENED`, submit early or act on the customer channel (all refused), stolen and
-forged credentials, seven manifest attacks rejected with their reason codes, and then that the
-application is still in its previous state (**not** `REJECTED`) and the real customer can
-continue. `demo_manual_review` shows the synthetic compliance review (`customer_ref`
-`synthetic-review-...`), the generic agent view, the customer signing in on the bank page and
-pressing **"Speak to a person"** (a forged CSRF token is refused; the answer is the same
-neutral "Request received"), the operator console (`list`, `show`, `request-info`, refused decisions, `add-evidence`,
-`decide RE_EVALUATE`), compliance attempt 2 `PASS`, submission, `OPENED` and a restart.
-
-## Scripted and real LLM modes
-
-**Scripted (the default):** nothing to configure, no key, no model. The three demos above always use
-it.
-
-**Real LLM (explicit opt-in):** the model only proposes tool calls. The six tools, the REST API and
-the bank's policy are the same. Put your key into the local, git-ignored `.env` (never into
-`.env.example`, never into a commit), then:
-
-```powershell
-# .env:  ANTHROPIC_API_KEY=<your key>
-.\.venv\Scripts\python.exe -m scripts.demo_llm       # one real interaction, start to finish (billed, a few cents)
-.\.venv\Scripts\python.exe -m scripts.eval_llm --mode scripted --output scripted.json   # offline baseline
-.\.venv\Scripts\python.exe -m scripts.eval_llm --mode llm --output my-run.json          # the 20 cases, live (billed)
-.\.venv\Scripts\python.exe -m scripts.eval_llm --report docs\evaluation\phase-05-live-results.json
-```
-
-Without a key both commands print `BLOCKED` and exit 3 without calling anything. To select the agent
-in your own code through `build_customer_agent`, set `TRUSTEQ_AI_EXECUTION_MODE=llm`,
-`TRUSTEQ_ENABLE_LLM=true` and `TRUSTEQ_LLM_PROVIDER=anthropic`; a missing key or SDK then fails closed.
-Model, limits, results and limitations: [docs/phase-05-evaluation.md](docs/phase-05-evaluation.md).
-
-## Start FastAPI
-
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
-```
-
-* Health check: <http://127.0.0.1:8000/health>; Swagger UI: <http://127.0.0.1:8000/docs>
-* The first start creates `trusteq.db` in the current folder (git-ignored) and its tables.
-* Public contract: provider manifest, products, approved claims, applications (create / read / handoff /
-  submit) and the customer routes. The provider callback and HTML pages are intentionally not listed.
-* Customers supply tax information and answer the knowledge questions before they can confirm. Set
-  `TRUSTEQ_CUSTOMER_INFORMATION_REQUIRED=false` for the original flow.
-
-### Drive the flow by hand
-
-The agent and the customer are different actors with different credentials. The agent's first
-token comes from the trusted dev bootstrap CLI (there is no HTTP endpoint for it). The provider
-callback needs a secret; generate one for this session only and never commit it. Run every
-command from the project folder (server and CLI then share `trusteq.db`).
-
-```powershell
-# 1) Start the server with a throw-away callback secret (PowerShell window A)
-$env:TRUSTEQ_MOCK_PROVIDER_CALLBACK_SECRET = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
-.\.venv\Scripts\python.exe -m uvicorn app.main:app
-
-# 2) OPERATOR (window B): grant agent-a ONE draft for demo-customer-1 (token printed once)
-$boot = (.\.venv\Scripts\python.exe -m scripts.dev_auth bootstrap --agent agent-a --customer demo-customer-1 |
-         Select-String '^\s+tqa_').Line.Trim()
-
-# 3) AGENT (window B): discover (public), draft (bootstrap token), ask for approval (onboarding token)
-$base = "http://127.0.0.1:8000"
-Invoke-RestMethod "$base/v1/providers/fixture-bank/manifest"
-Invoke-RestMethod "$base/v1/products"
-$hdr = @{ Authorization = "Bearer $boot"; "Idempotency-Key" = [guid]::NewGuid().ToString() }
-$body = '{"provider_id":"fixture-bank","product_id":"depot-basic","channel_id":"direct","customer_ref":"demo-customer-1"}'
-$app = Invoke-RestMethod -Method Post "$base/v1/applications" -Headers $hdr -ContentType application/json -Body $body
-$onb = @{ Authorization = "Bearer $($app.authorization.onboarding.access_token)" }   # handoff + submit
-$sts = @{ Authorization = "Bearer $($app.authorization.status.access_token)" }       # read-only
-$handoff = Invoke-RestMethod -Method Post "$base/v1/applications/$($app.application_id)/handoff" -Headers $onb
-$handoff.confirmation_url      # give this link to the CUSTOMER
-```
-
-3. **Customer:** open `$handoff.confirmation_url` in a browser. The page first asks for the
-   *simulated* sign-in - enter `demo-customer-1` - then shows provider, product, channel,
-   application reference, the exact action and the disclosure version. Enter the synthetic tax
-   information (`DE`, `SYNTH-TAX-700421`, not a US person) and answer the questions. Then press
-   **Confirm and authorize**. (Any other customer id is refused; the forms are CSRF-protected.)
-
-```powershell
-# 4) AGENT again: resume after the customer, submit, read the status
-Invoke-RestMethod "$base/v1/applications/$($app.application_id)" -Headers $sts          # IN_PROGRESS
-Invoke-RestMethod -Method Post "$base/v1/applications/$($app.application_id)/submit" -Headers $onb
-```
-
-5. **The MOCK provider** confirms. Because only a signed message may open the account, use the
-   helper that plays the provider (same secret as step 1, in window B):
-
-```powershell
-@'
-import os, sys, httpx
-from app.integrations.provider_callback import build_signed_confirmation
-app_id = sys.argv[1]
-cb = build_signed_confirmation(os.environ["TRUSTEQ_MOCK_PROVIDER_CALLBACK_SECRET"].encode(),
-                               application_id=app_id, provider_ref=f"MOCK-DEPOT-{app_id}")
-r = httpx.post("http://127.0.0.1:8000/internal/depot-provider/confirmations", content=cb.body, headers=cb.headers)
-print(r.status_code, r.json())
-'@ | .\.venv\Scripts\python.exe - $app.application_id
-Invoke-RestMethod "$base/v1/applications/$($app.application_id)" -Headers $sts          # OPENED
-Invoke-RestMethod -Method Post "$base/v1/applications/$($app.application_id)/submit" -Headers $onb  # 401: revoked
-```
-
-Human review (Phase 04, DEV only - there is no operator HTTP endpoint):
-`python -m scripts.dev_operator --operator op-reviewer-1 list` / `show --case <id>` /
-`request-info` / `add-evidence` / `decide --decision RE_EVALUATE|RESUME|REJECT|ACKNOWLEDGE`
-(`REJECT` needs `op-supervisor-1`). A signed-in customer asks for a person with the
-**"Speak to a person"** button on the bank page (review page and confirmation page) or
-with `POST /v1/customer/applications/{id}/request-human` - both need the customer's server-side
-session and its CSRF token for that application; a self-asserted `X-Dev-Customer-Id` header or
-an agent token is refused (details: [docs/onboarding-flow.md](docs/onboarding-flow.md)).
-
-Lost a token, or continuing an application created before Phase 03?
-`python -m scripts.dev_auth app-tokens --application-id <id>` re-issues its tokens (never wider);
-`python -m scripts.dev_auth revoke --jti <jti>` revokes one server-side.
-
-## Run the tests
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-```
-
-Tests use in-memory or temporary SQLite databases, real HTTP-level clients, and never touch
-`trusteq.db`. The suite includes runs of all three demos.
-
-Targeted mutation testing of the security controls (each mutant breaks one control in a
-temporary copy - your files are never modified - and the suite must notice):
-
-```powershell
-.\.venv\Scripts\python.exe -m scripts.security_mutations          # --list, --only M01,M17
-```
-
-## Run ruff
-
-```powershell
-.\.venv\Scripts\python.exe -m ruff check .
-.\.venv\Scripts\python.exe -m ruff format --check .
-```
-
-Everything at once: `powershell -ExecutionPolicy Bypass -File scripts\check.ps1`
-
-## Environment configuration
-
-The app runs with **no `.env` file and no API key**. To override settings:
-
-```powershell
-Copy-Item .env.example .env   # .env is git-ignored; never commit it
-```
-
-All variables use the `TRUSTEQ_` prefix, except the provider's usual `ANTHROPIC_API_KEY`
-(see `.env.example`): app name, environment
-(`development` / `test` / `production`), debug, database URL, log level/format, AI execution mode
-(`scripted` / `llm`), optional LLM settings, the DEV/TEST switches (agent bootstrap issuance,
-simulated customer sign-in, operator console), lifetimes (handoff, onboarding grant, bootstrap grant, status
-grant, customer session), the MOCK provider callback secret, and allowed CORS origins. Invalid
-combinations fail at startup: e.g. `debug=true`, an explicit dev switch, or the mock callback
-secret in **production**; or `llm` mode without `TRUSTEQ_ENABLE_LLM=true`. Phase 03 removed
-`TRUSTEQ_DEV_ACTOR_AUTH_ENABLED` (the `X-Dev-Actor-Id` header no longer exists).
-
-## Implemented (2026 prototype) vs mocked vs 2030 target
-
-| Area | Implemented and tested (2026 prototype) | Mocked / simulated | 2030 target (not built) |
-|---|---|---|---|
-| Provider discovery | bank register as trust root; pinned digest; signed, versioned, expiring manifests; identity/domain/endpoint/capability/channel binding; no rollback; validity re-checked at use; fail closed | synthetic provider, partners and register; HMAC with a shared DEV key; no network fetch | provider-signed manifests (JWS / eIDAS seal) over mTLS from the verified domain, key rotation and revocation |
-| Product information + disclosures | versioned terms, fees, conditions, risk, sources with digests, terms digest; receipts bound to exact versions and the action digest; stale approvals refused at confirm and submit | all content synthetic | provider feeds with legal sign-off, wallet-based signed consent, re-consent flow |
-| Partner attribution | registry-based, customer-confirmed, append-only; the agent cannot name a recipient | synthetic partners; no commission | contractual partner registry, commission settlement |
-| Human review | durable cases, generic customer acknowledgement, fixed operator decisions, re-evaluation as a new deterministic attempt, supervisor-only rejection, audit | synthetic operators and evidence references; MOCK compliance scenario switch | case management with SSO, RBAC, four-eyes, SLAs, evidence store |
-| Agent | scripted (default, no key) and a real LLM behind an explicit flag: the same six tools, REST only; allowlisted, typed, bounded; measured on 20 fixed cases | every provider and catalog behind it | provider-side explainer, MCP/A2A adapters, production monitoring of model behaviour |
-| Agent authorization | **real and tested, controlled DEV implementation**: opaque bearer tokens stored as SHA-256 hashes; issuer, audience, expiry, `jti`, revocation, per-operation scopes, resource binding; single-use bootstrap; revoked at terminal states | first grant from a trusted DEV CLI | OAuth 2.0 / FAPI 2.0, sender-constrained tokens (DPoP/mTLS), RFC 9396 / RFC 8693 |
-| Customer authentication + intervention | server-side session (hashed secret, HttpOnly/SameSite=Strict/Secure-on-HTTPS cookies for the pages and the customer API, expiry, rotation) + per-target CSRF tokens; "Speak to a person" and `request-human` require both | **DEV simulation** of the sign-in itself, which any client can use or script (F-1 residual limit) | bank-controlled strong authentication (online banking / eID / EUDI wallet), a customer case view, phone/chat channels |
-| Tax information | customer page and JSON API, deterministic validation, required before confirmation, identifier discarded | synthetic format only; no tax authority | encrypted storage and retention; checks and reporting as legally required |
-| Appropriateness | customer page and JSON API, deterministic result, warning and acknowledgement; never blocks the account | synthetic questions, not legal compliance; no order step | compliance-owned rule sets per product and service |
-| Product communication | approved claims with source and version at the agent's tool boundary; claim check API; hostile catalog text excluded | synthetic catalog | signed claim feeds with legal sign-off; the bank still does not control third-party wording |
-| KYC / compliance / contract / depot provider | the deterministic workflow around them; versioned provider adapter with an explicit fallback policy; the signed callback is the only path to `OPENED` | **MOCK** results, `mock=true`, `MOCK-` references | contracted regulated providers, partner integration with mTLS |
-| Policy, state machine, audit, idempotency, persistence, recovery | real and tested (schema v5 with resumable upgrades) | - | HA database, durable workflow engine, DORA controls, security review |
-
-## Current security limitations
-
-* The **customer sign-in and the operator identities are simulations**: anyone who completes the
-  dev sign-in can claim any customer (what is real is the server-side session, its expiry,
-  rotation, cookie flags and CSRF binding around it); anyone who can run the operator console on
-  the server can act as a synthetic operator. Both are disabled in production. The dev customer
-  header no longer works on any route. No external identity provider is available to this project:
-  `TRUSTEQ_CUSTOMER_IDENTITY_MODE=oidc` only makes the customer pages fail closed.
-* There is no customer-facing case view (`GET /v1/customer/cases/{id}` from ADR section 09 is
-  deferred: it must never reveal internal review reasons).
-* Manifest signatures use a **shared HMAC key** (a symmetric stand-in): whoever holds the key could
-  also sign. The key, provider, partners and register are synthetic and fixture-local.
-* Agent tokens are **bearer tokens** (no DPoP/mTLS binding, no client authentication, no refresh
-  flow, no rate limiting).
-* A change of terms after the customer's consent blocks submission (fail closed); there is no
-  re-consent flow - a new application is needed.
-* Mock results are not legal, AML or identity evidence. Not legal advice and no regulatory
-  compliance or certification is claimed (no BaFin, MiFID II or WpHG claim); counsel review is
-  required before any real deployment.
-
-## Next step
-
-The presentation.
-
-## Git
-
-Branch `main`, tracking a **private** GitHub repository (`origin`). New work stays local
-and uncommitted until it is reviewed. `.gitignore` excludes `.env`, `.venv/`, caches, SQLite files
-(including WAL files), build output, temp files and `.claude/`.
+Claude Code was a development tool. The AI component that runs **inside** the application is the optional Claude agent
+described in [AI integration](#ai-integration).

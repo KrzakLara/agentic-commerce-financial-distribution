@@ -66,14 +66,14 @@ def test_supported_claims_are_approved_with_their_verified_source() -> None:
             provider_id="fixture-bank",
             product_id="depot-basic",
             text=PRODUCT.conditions or "",
-            source=PRICE_LIST,
+            source=MANIFEST,
         ),
         Claim(
             kind=ClaimKind.RISK_SUMMARY,
             provider_id="fixture-bank",
             product_id="depot-basic",
             text=PRODUCT.risk_summary or "",
-            source=DISCLOSURE,
+            source=MANIFEST,
         ),
         identity(provider_identity_text(PROVIDER)),
         partner("partner-1", partner_name or ""),
@@ -81,6 +81,33 @@ def test_supported_claims_are_approved_with_their_verified_source() -> None:
         verdict = validate_claim(CATALOG, claim)
         assert verdict.approved, (claim, verdict)
         assert verdict.safe_response is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "text", "wrong_source"),
+    [
+        (ClaimKind.CONDITIONS, PRODUCT.conditions, PRICE_LIST),
+        (ClaimKind.RISK_SUMMARY, PRODUCT.risk_summary, DISCLOSURE),
+    ],
+)
+def test_a_document_that_does_not_contain_the_text_is_no_valid_citation(
+    kind: ClaimKind, text: str, wrong_source: SourceCitation
+) -> None:
+    """The price list says nothing about conditions, and the disclosure has other words."""
+    document = CATALOG.get_document_text(wrong_source.document_id, wrong_source.document_version)
+    assert text not in document
+    verdict = validate_claim(
+        CATALOG,
+        Claim(
+            kind=kind,
+            provider_id="fixture-bank",
+            product_id="depot-basic",
+            text=text,
+            source=wrong_source,
+        ),
+    )
+    assert verdict.decision is ClaimDecision.UNSUPPORTED
+    assert verdict.reason == "no_verified_source_reference"
 
 
 @pytest.mark.parametrize(

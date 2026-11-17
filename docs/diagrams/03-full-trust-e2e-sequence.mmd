@@ -1,0 +1,43 @@
+sequenceDiagram
+  autonumber
+  actor C as Customer (browser)
+  participant A as Personal agent (own process)
+  participant T as Trust authority (SYNTHETIC)
+  participant B as Bank platform
+  participant I as OIDC provider (LOCAL, SYNTHETIC USERS)
+  participant P as Proofing provider (SYNTHETIC)
+  participant S as Test signer (SYNTHETIC, NO LEGAL EFFECT)
+  participant D as Depot provider (MOCK)
+
+  A->>T: List the federation, fetch entity statements
+  A->>B: Read the signed Agent Card, profile and product facts
+  Note over A: Verifies signatures, keys and expiry. The licence stays NOT_ESTABLISHED
+  A->>B: Pushed delegation request: registered key, scopes, exact offer
+  C->>B: Opens the bank's delegation page
+  B-->>C: Redirect to the IdP with code + PKCE, state and nonce
+  C->>I: Signs in
+  I-->>B: Authorization code, through the browser
+  B->>I: Redeems the code with the PKCE verifier
+  I-->>B: ID token, checked for ES256, iss, aud, exp, nonce
+  C->>B: Approves the delegation
+  A->>B: Collects a DPoP-bound token
+  A->>B: depot-onboarding start: application DRAFT
+  A->>B: request_customer_confirmation: AWAITING_AUTHORIZATION
+  rect rgb(232, 233, 235)
+    Note over C,D: The five onboarding steps, in the bank's customer channel
+    C->>B: 1 Starts identity proofing (needs the OIDC session)
+    B->>P: Opens a case
+    P-->>B: Signed result (ES256, one-time id, bound to case and customer): VERIFIED
+    C->>B: 2 Tax information (format check, the identifier is not stored)
+    C->>B: 3 Knowledge and experience (rules synthetic-2026.11, a warning never rejects)
+    C->>B: Confirms the exact action (digest, CSRF, one-time handoff)
+    Note over B: Policy decision recorded. AUTHORIZED to CONTRACT_PENDING with mock KYC and compliance
+    C->>B: 4 Reviews the package hash and authorizes signing
+    B->>S: Opens a signing session
+    S-->>B: Signed callback: SIGNED at TEST_NO_LEGAL_EFFECT
+    A->>B: product-question: answered from verified facts only
+    A->>B: 5 Submits after consent: every gate checked, SUBMITTED_TO_DEPOT_PROVIDER
+    B->>D: Versioned hand-over (v2, v1 only by explicit fallback)
+    D-->>B: HMAC-signed confirmation, the only path to OPENED
+  end
+  B-->>A: Status OPENED. The evidence is in the audit trail

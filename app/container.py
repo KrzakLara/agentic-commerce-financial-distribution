@@ -9,6 +9,7 @@ pass a different `AppContainer` to `create_app` to change an outcome, e.g.
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 from joserfc.jwk import ECKey
@@ -48,6 +49,11 @@ class AppContainer:
     provider_key: ECKey = field(default_factory=lambda: generate_key("provider-ephemeral"))
     # Outbound requests to configured providers (OIDC, signing, proofing). Tests swap the transport.
     outbound_http: Callable[[], httpx.Client] = field(default=default_client)
+    # The model client of the bank's question answering, in LLM mode only. Empty until first used;
+    # the offline evaluation and the tests put a fake one here, on the real adapter's path.
+    answer_model_client: Any = None
+    # Paid model runs left in this process, set up on first use from the configured limit.
+    answer_budget: Any = None
 
 
 def build_default_container(settings: Settings) -> AppContainer:

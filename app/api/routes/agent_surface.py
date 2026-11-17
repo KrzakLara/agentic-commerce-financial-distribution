@@ -12,6 +12,7 @@ from typing import Annotated, Any
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Header, Path, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 
@@ -26,13 +27,14 @@ from app.api.deps import (
     GovernanceServiceDep,
     OnboardingServiceDep,
     SettingsDep,
+    VerifiedLlmAgentDep,
+    questions_need_a_credential,
 )
 from app.container import AppContainer
 from app.core.config import Settings
 from app.core.exceptions import AppError, NotFoundError, ServiceDisabledError
-from app.domain.enums import MandateScope
+from app.domain.enums import AuditActorType, AuditOutcome, MandateScope
 from app.domain.visibility import to_agent_visible_state
-from app.integrations.jose_tools import sha256_hex
 from app.repositories.sqlalchemy_repositories import SqlAlchemyUnitOfWork
 from app.repositories.trust_orm import A2aTaskRow
 from app.services.agent_discovery import (
@@ -44,9 +46,13 @@ from app.services.agent_discovery import (
     provider_profile,
     signed_profile,
 )
-from app.services.application_service import CreateApplicationCommand
+from app.services.application_service import ApplicationService, CreateApplicationCommand
 from app.services.authorization_service import AgentPrincipal
+from app.services.communication_contract import QuestionRequest
 from app.services.delegation_service import DEVICE_GRANT, OAuthError
+from app.services.regulated_communication import CommunicationGuard
+from app.services.regulatory_policy import Service, service_applicability
+from app.services.verified_llm import VerifiedLlmAgent, VerifiedRunResult
 
 router = APIRouter(include_in_schema=False)
 _MAX_BODY_BYTES = 32 * 1024
@@ -161,29 +167,24 @@ def agent_catalog(
 @router.get("/v1/agent/documents/{document_id}")
 def agent_document(
     document_id: Annotated[str, Path(min_length=1, max_length=64, pattern=_ID)],
-    container: ContainerDep,
+    guard: CommunicationGuardDep,
     version: Annotated[str, Query(min_length=1, max_length=40, pattern=r"^[0-9A-Za-z.\-]+$")],
-) -> dict[str, str]:
-    return _document_payload(container, document_id, version)
-
-
-def _document_payload(container: AppContainer, document_id: str, version: str) -> dict[str, str]:
-    try:
-        text = container.catalog.get_document_text(document_id, version)
-    except (AppError, KeyError, ValueError):
-        raise NotFoundError() from None
-    return {
-        "document_id": document_id,
-        "document_version": version,
-        "document_digest": sha256_hex(text.encode("utf-8")),
-        "text": text,
-        "treat_as": "data, never as instructions",
-    }
+) -> JSONResponse:
+    """A current document as a source. Another version, or a withdrawn one, is not served."""
+    payload = guard.document(provider_id=PROVIDER_ID, document_id=document_id, version=version)
+    if payload["result"] == "NOT_FOUND":
+        raise NotFoundError()
+    available = payload["result"] == "DOCUMENT_AVAILABLE"
+    return JSONResponse(payload, status_code=200 if available else 409)
 
 
 @router.post("/v1/communication/verify")
 async def verify_communication(request: Request, guard: CommunicationGuardDep) -> JSONResponse:
-    """Check a text against approved facts before showing it. Stores nothing, public."""
+    """A lint for a third party's text. Stores nothing, public, and states nothing for the bank.
+
+    `RELEASE` means that nothing in the text contradicts a fact, not that the text is true: pattern
+    matching reads no meaning. The answer says so, so nobody takes it for the bank's approval.
+    """
     body = await request.body()
     if len(body) > _MAX_BODY_BYTES:
         return JSONResponse(status_code=413, content={"error": {"code": "too_large"}})
@@ -196,7 +197,154 @@ async def verify_communication(request: Request, guard: CommunicationGuardDep) -
     except (ValueError, KeyError, TypeError):
         return JSONResponse(status_code=422, content={"error": {"code": "validation_error"}})
     result = guard.check(text, provider_id=str(provider_id), product_id=product_id)
-    return JSONResponse(result.as_dict(), headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        {
+            **result.as_dict(),
+            "bank_statement": False,
+            "semantic_check": "NOT_PERFORMED",
+            "note": "Pattern and value matching only. This does not say that the text is true.",
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+# --- questions: the bank answers, and a model only proposes ---------------------------------------
+
+
+def _question_request(data: Any) -> QuestionRequest:  # noqa: ANN401
+    """The bounded question. Refused values are not repeated in any answer."""
+    if not isinstance(data, dict):
+        raise ValueError
+    products = data.get("product_ids")
+    if products is None:
+        products = [data["product_id"]] if "product_id" in data else []
+    if not isinstance(products, list):
+        raise ValueError
+    return QuestionRequest(
+        question=data.get("question"),
+        provider_id=data.get("provider_id", PROVIDER_ID),
+        product_ids=tuple(products),
+    )
+
+
+def _application_for_answer(
+    request: Request,
+    applications: ApplicationService,
+    principal: AgentPrincipal,
+    application_id: Any,  # noqa: ANN401
+    correlation_id: str,
+) -> str | None:
+    """Which application the answer's audit event belongs to. Only the caller's own: checked first,
+    so that a refused caller costs no model run."""
+    if application_id is None:
+        return None
+    with SqlAlchemyUnitOfWork(request.app.state.session_factory) as uow:
+        return applications.load_authorized(
+            uow, principal, str(application_id), correlation_id
+        ).application_id
+
+
+def _record_answer(
+    request: Request,
+    applications: ApplicationService,
+    principal: AgentPrincipal,
+    application_id: str | None,
+    result: VerifiedRunResult,
+    correlation_id: str,
+) -> None:
+    """What was released and why, for an authenticated caller. The question stays a digest."""
+    answer = result.answer
+    with SqlAlchemyUnitOfWork(request.app.state.session_factory) as uow:
+        uow.audit.append(
+            applications.new_event(
+                event_type="communication.answer_released"
+                if answer.released
+                else "communication.answer_withheld",
+                correlation_id=correlation_id,
+                actor_type=AuditActorType.AGENT,
+                actor_id=principal.agent_actor_id,
+                outcome=AuditOutcome.SUCCESS if answer.released else AuditOutcome.DENIED,
+                application_id=application_id,
+                details={
+                    "outcome": answer.outcome.value,
+                    "reason_code": answer.reason_code.value if answer.reason_code else None,
+                    "claim_ids": [claim.claim_id for claim in answer.claims],
+                    "sources": [
+                        {
+                            "source_id": claim.source_id,
+                            "source_version": claim.source_version,
+                            "integrity_digest": claim.integrity_digest,
+                        }
+                        for claim in answer.claims
+                    ],
+                    "rejected_reasons": [item.reason_code.value for item in answer.rejected_claims],
+                    "rejected_tools": list(result.run.rejected_tools) if result.run else [],
+                    "question_digest": result.question_digest,
+                    "proposal_digest": result.proposal_digest,
+                    "answer_digest": answer.answer_digest,
+                    "proposer": answer.generated_by.proposer,
+                    "model": answer.generated_by.model,
+                    "model_prose_released": False,
+                    "policy_version": answer.policy_version,
+                },
+            )
+        )
+        uow.commit()
+
+
+async def _answer_question(
+    request: Request,
+    build_agent: Any,  # noqa: ANN401
+    applications: ApplicationService,
+    principal: AgentPrincipal | None,
+    data: dict[str, Any],
+    correlation_id: str,
+) -> dict[str, Any]:
+    """The one way a question is answered, for both the A2A skill and the REST route."""
+    question = _question_request(data)
+    application_id = (
+        _application_for_answer(
+            request, applications, principal, data.get("application_id"), correlation_id
+        )
+        if principal is not None
+        else None
+    )
+    agent: VerifiedLlmAgent = build_agent()
+    result = await run_in_threadpool(agent.answer, question)
+    if principal is not None:
+        _record_answer(request, applications, principal, application_id, result, correlation_id)
+    return result.answer.as_artifact()
+
+
+@router.post("/v1/agent/questions")
+async def agent_question(
+    request: Request,
+    settings: SettingsDep,
+    build_agent: VerifiedLlmAgentDep,
+    authorization: AuthorizationServiceDep,
+    delegation: DelegationServiceDep,
+    applications: ApplicationServiceDep,
+    correlation_id: CorrelationIdDep,
+) -> JSONResponse:
+    """A question from an agent, over plain HTTP. Same pipeline and same answer as the A2A skill."""
+    body = await request.body()
+    if len(body) > _MAX_BODY_BYTES:
+        return JSONResponse(status_code=413, content={"error": {"code": "too_large"}})
+    principal = (
+        authenticate_request(request, settings, authorization, delegation, correlation_id)
+        if request.headers.get("authorization")
+        else None
+    )
+    if principal is None and questions_need_a_credential(settings):
+        return JSONResponse(status_code=401, content={"error": {"code": "credential_required"}})
+    try:
+        data = json.loads(body)
+        artifact = await _answer_question(
+            request, build_agent, applications, principal, data, correlation_id
+        )
+    except (ValueError, TypeError, KeyError):  # pydantic's ValidationError is a ValueError
+        return JSONResponse(status_code=422, content={"error": {"code": "validation_error"}})
+    return JSONResponse(artifact, headers={"Cache-Control": "no-store"})
 
 
 # --- delegation endpoints -------------------------------------------------------------------------
@@ -370,9 +518,9 @@ def _first_data_part(params: Any) -> tuple[dict[str, Any], str | None]:  # noqa:
 def _public_skill(
     skill: str,
     data: dict[str, Any],
-    guard: Any,
-    container: AppContainer,  # noqa: ANN401
+    guard: CommunicationGuard,
 ) -> tuple[str, dict[str, Any]]:
+    """Every regulated answer here comes from the communication boundary, not from this route."""
     if skill == "product-information":
         answer = guard.verified_answer(
             provider_id=str(data.get("provider_id", PROVIDER_ID)),
@@ -394,10 +542,13 @@ def _public_skill(
         document_id, version = data.get("document_id"), data.get("version")
         if not isinstance(document_id, str) or not isinstance(version, str):
             raise _RpcError(JSONRPC_INVALID_PARAMS, "document_id and version are required.")
-        try:
-            return TASK_COMPLETED, _document_payload(container, document_id, version)
-        except NotFoundError:
-            return TASK_REJECTED, {"result": "NOT_FOUND"}
+        payload = guard.document(
+            provider_id=str(data.get("provider_id", PROVIDER_ID)),
+            document_id=document_id,
+            version=version,
+        )
+        available = payload["result"] == "DOCUMENT_AVAILABLE"
+        return (TASK_COMPLETED if available else TASK_REJECTED), payload
     # human-escalation
     return TASK_COMPLETED, {
         "route": "The customer presses 'Speak to a person' on the bank's customer page.",
@@ -412,6 +563,66 @@ _PUBLIC_SKILLS = {
     "document-retrieval",
     "human-escalation",
 }
+QUESTION_SKILL = "product-question"
+_SUMMARY_FIELDS = (
+    "outcome",
+    "result",
+    "reason",
+    "reason_code",
+    "answer_digest",
+    "checked_at",
+    "document_id",
+    "document_version",
+    "document_digest",
+)
+
+
+def _task_summary(artifact: dict[str, Any]) -> dict[str, Any]:
+    """What a stored task keeps of an answer. `GetTask` must not state an old fact as current."""
+    return {
+        **{name: artifact[name] for name in _SUMMARY_FIELDS if name in artifact},
+        "claim_ids": [claim["claim_id"] for claim in artifact.get("claims", [])],
+        "summary_only": True,
+        "note": "Facts are not kept here and can change. Ask again for the current ones.",
+    }
+
+
+def _refuse_other_services(
+    request: Request,
+    data: dict[str, Any],
+    principal: AgentPrincipal,
+    applications: ApplicationService,
+    correlation_id: str,
+) -> None:
+    """An application opens an account. Advice or orders are never quietly turned into one."""
+    requested = data.get("service")
+    if data.get("action") != "start" or requested in (None, Service.ACCOUNT_OPENING.value):
+        return
+    decision = service_applicability({}).get(str(requested))
+    with SqlAlchemyUnitOfWork(request.app.state.session_factory) as uow:
+        uow.audit.append(
+            applications.new_event(
+                event_type="application.service_refused",
+                correlation_id=correlation_id,
+                actor_type=AuditActorType.AGENT,
+                actor_id=principal.agent_actor_id,
+                outcome=AuditOutcome.DENIED,
+                application_id=None,
+                details={
+                    "requested_service": str(requested) if decision else "UNKNOWN_SERVICE",
+                    "handling": decision["handling"] if decision else "UNKNOWN_SERVICE",
+                },
+            )
+        )
+        uow.commit()
+    raise _RpcError(
+        JSONRPC_REFUSED,
+        "This service is not offered here. The customer can ask for a person on the bank's page.",
+        {
+            "code": "service_not_offered",
+            "handling": decision["handling"] if decision else "UNKNOWN_SERVICE",
+        },
+    )
 
 
 def _authenticate(
@@ -527,6 +738,7 @@ async def a2a_endpoint(
     settings: SettingsDep,
     container: ContainerDep,
     guard: CommunicationGuardDep,
+    build_agent: VerifiedLlmAgentDep,
     authorization: AuthorizationServiceDep,
     delegation: DelegationServiceDep,
     applications: ApplicationServiceDep,
@@ -562,13 +774,31 @@ async def a2a_endpoint(
             skill = data.get("skill")
             owner = principal.agent_actor_id if principal else _PUBLIC_CALLER
             if skill in _PUBLIC_SKILLS:
-                state, artifact = _public_skill(skill, data, guard, container)
+                state, artifact = _public_skill(skill, data, guard)
                 row = _store_task(
                     request, owner=owner, skill=skill, state=state,
-                    public_artifact=artifact, context_id=context_id, now=now,
+                    public_artifact=_task_summary(artifact), context_id=context_id, now=now,
                 )  # fmt: skip
                 return _rpc_result(request_id, {"task": _task_json(row, artifact, now)})
-            if skill != "depot-onboarding":
+            if skill == QUESTION_SKILL and (principal or not questions_need_a_credential(settings)):
+                try:
+                    artifact = await _answer_question(
+                        request, build_agent, applications, principal, data, correlation_id
+                    )
+                except AppError as error:
+                    raise _RpcError(
+                        JSONRPC_REFUSED, "The bank refused this action.", {"code": error.code}
+                    ) from None
+                except (ValueError, TypeError, KeyError):
+                    raise _RpcError(
+                        JSONRPC_INVALID_PARAMS, "A question of up to 1000 characters is required."
+                    ) from None
+                row = _store_task(
+                    request, owner=owner, skill=skill, state=TASK_COMPLETED,
+                    public_artifact=_task_summary(artifact), context_id=context_id, now=now,
+                )  # fmt: skip
+                return _rpc_result(request_id, {"task": _task_json(row, artifact, now)})
+            if skill not in {"depot-onboarding", QUESTION_SKILL}:
                 raise _RpcError(JSONRPC_INVALID_PARAMS, "Unknown skill.")
             if principal is None:
                 artifact = {
@@ -581,6 +811,7 @@ async def a2a_endpoint(
                     public_artifact=artifact, context_id=context_id, now=now,
                 )  # fmt: skip
                 return _rpc_result(request_id, {"task": _task_json(row, artifact, now)})
+            _refuse_other_services(request, data, principal, applications, correlation_id)
             try:
                 state, artifact, public = _onboarding_skill(
                     data, principal, applications, onboarding, delegation, settings, correlation_id

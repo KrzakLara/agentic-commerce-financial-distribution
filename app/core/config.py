@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     llm_max_tool_rounds: int = Field(default=8, ge=1, le=20)
     llm_timeout_seconds: float = Field(default=60.0, ge=5.0, le=300.0)
     llm_max_retries: int = Field(default=1, ge=0, le=3)
+    # The bank's own question answering, in LLM mode: a question needs a verified credential, and
+    # one process makes at most this many paid model runs. Scripted mode is free and public.
+    llm_questions_require_credential: bool = True
+    llm_max_questions_per_process: int = Field(default=200, ge=1, le=100_000)
 
     # DEV/TEST ONLY: the trusted bootstrap (`python -m scripts.dev_auth`, the demo, tests) may
     # issue an agent's first, narrow grant. There is NO HTTP endpoint for it. Agents always
@@ -126,7 +130,7 @@ class Settings(BaseSettings):
 
     # The nine-area integrated journey: identity proofing, contract signing, attribution and
     # policy evidence become mandatory gates. Off by default, so the earlier scenarios are
-    # unchanged.
+    # unchanged. It needs `customer_identity_mode=oidc`: the DEV sign-in never runs next to it.
     full_trust_profile: bool = False
     delegation_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     delegation_request_ttl_seconds: int = Field(default=600, ge=30, le=3600)
@@ -215,6 +219,14 @@ class Settings(BaseSettings):
                 raise ValueError("oidc_allow_insecure_local must not be set in production")
             if self.provider_signing_jwk is None and self.full_trust_profile:
                 raise ValueError("full_trust_profile in production needs provider_signing_jwk")
+        if self.full_trust_profile and not self.customer_information_required:
+            # The profile's gates read the customer's information, and the pages collect it only
+            # with this on. Off, a customer could never get past the gates.
+            raise ValueError("full_trust_profile requires customer_information_required")
+        if self.full_trust_profile and self.customer_identity_mode != "oidc":
+            # The profile's gates rest on a verified login. Next to the DEV sign-in, a typed
+            # customer ID could approve an agent's delegation and supply the customer's information.
+            raise ValueError("full_trust_profile requires customer_identity_mode=oidc")
         if self.signature_level == "QES" and self.qtsp_id is None:
             raise ValueError("a qualified signature needs a real, named QTSP")
         if self.proofing_provider_regulated and self.environment is not Environment.PRODUCTION:
@@ -238,6 +250,8 @@ class Settings(BaseSettings):
             self.dev_customer_auth_enabled
             and self.environment is not Environment.PRODUCTION
             and self.customer_identity_mode == "dev_simulated"
+            # Also when a copied settings object skipped the validation above.
+            and not self.full_trust_profile
         )
 
     @property

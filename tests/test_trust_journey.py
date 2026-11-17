@@ -30,6 +30,8 @@ def test_the_journey_and_its_negative_cases_pass_across_separate_processes() -> 
         "untrusted_anchor",
         "revoked_delegation_refused",
         "MANUAL_REVIEW",
+        "decided REJECT on the trusted console",
+        "REJECTED: a person can end the case",
         "TEST_NO_LEGAL_EFFECT",
     ):
         assert marker in output, marker

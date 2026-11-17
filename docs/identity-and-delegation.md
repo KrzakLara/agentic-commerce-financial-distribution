@@ -29,7 +29,10 @@ recorded as `oidc_authenticated_not_proofed`.
 - **Data:** statuses and labels only. A field outside the fixed list, such as `document_image`, refuses the whole message.
 - **Regulatory evidence:** always false. `proofing_provider_regulated` is refused outside production and has no implementation
   behind it. A provider's claim of regulatory evidence is refused.
-- **DEV sign-in:** a DEV session cannot start proofing, so identity cannot be completed with it.
+- **DEV sign-in:** a DEV session cannot start proofing, so identity cannot be completed with it. Since 2026-11-07 the
+  full-trust profile refuses the DEV identity mode at start-up, and a session that no verified OIDC login created, such
+  as one a DEV sign-in left behind, is no customer there on any route: no delegation, information, proofing or
+  confirmation.
 
 ### Customer reference
 
@@ -41,7 +44,8 @@ existing checks refuse it.
 
 With `customer_identity_mode=dev_simulated`, the default for the older scenarios, anyone with the handoff values can use the
 DEV sign-in as any customer. In `oidc` mode with a complete configuration, the DEV sign-in is off. Without one, customer pages fail
-closed.
+closed. The full-trust profile requires `oidc`: `full_trust_profile=true` with `dev_simulated` stops the settings, so the server
+does not start.
 
 ## 2. Delegation
 

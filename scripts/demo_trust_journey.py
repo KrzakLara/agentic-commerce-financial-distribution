@@ -44,6 +44,7 @@ SHOWN_STAGES = {
     "profile_verified",
     "catalog_read",
     "verified_fact",
+    "verified_answer",
     "delegation_requested",
     "delegation_granted",
     "application_prepared",
@@ -310,6 +311,9 @@ def main_journey(stack: TrustStack) -> str:
         say("CUSTOMER", f"authorized signing of package {package_hash[:16]}...")
         say("TEST SIGNER", "signed callback sent: no legal effect, not a QES")
         agent.tell_customer_done()
+        answer = agent.read_until("verified_answer")
+        expect(answer["outcome"] == "VERIFIED_ANSWER", f"the agent's answer: {answer['outcome']}")
+        say("BANK", "answered the agent's question from verified facts; no model text released")
         agent.read_until("submitted")
         expect(provider_opens(stack, application_id) == 200, "the provider's confirmation")
         say("MOCK PROVIDER", "signed confirmation accepted: the only path to OPENED")
@@ -332,11 +336,14 @@ def check_evidence(
     print("\n== B. The audit evidence of that application")
     with contextlib.closing(_db(stack)) as db:
         events = {}
+        trail = []
         for row in db.execute(
-            "SELECT event_type, details FROM audit_events WHERE application_id = ? ORDER BY rowid",
+            "SELECT event_type, actor_type, outcome, details FROM audit_events "
+            "WHERE application_id = ? ORDER BY rowid",
             (application_id,),
         ):
             events.setdefault(row["event_type"], []).append(json.loads(row["details"]))
+            trail.append((row["event_type"], row["actor_type"], row["outcome"]))
         delegation = db.execute(
             "SELECT client_id, customer_id, identity_assurance, scopes, status "
             "FROM delegations WHERE delegation_id = ?",
@@ -402,6 +409,19 @@ def check_evidence(
         expect(secret not in dumped, f"found {secret} in the evidence tables")
     expect(steps.SYNTHETIC_TAX_ID not in everything, "a tax identifier reached the database")
     say("BANK", "no tax identifier in any table, no raw token in the evidence tables")
+    answered = events["communication.answer_released"][0]
+    expect(answered["model_prose_released"] is False, "no model text in the answer")
+    say(
+        "BANK",
+        f"agent's question: {answered['outcome']}, sources {answered['sources'][0]['source_id']}",
+    )
+    opened = events["provider.confirmation_accepted"][0]
+    expect(opened["delegation_id"] == delegation_id, "the delegation in the opening evidence")
+    expect(opened["contract_package_hash"] == package_hash, "the hash in the opening evidence")
+    say("BANK", "the opening event names the delegation, consent, policy, sources and the hash")
+    print("\n== B2. The audit trail of that application, in order")
+    for event_type, actor, outcome in trail:
+        say("AUDIT", f"{event_type:<40} {actor:<9} {outcome}")
 
 
 # --- the negative journeys ------------------------------------------------------------------------
@@ -499,10 +519,49 @@ def failed_identification(stack: TrustStack) -> None:
         say(
             "BANK", "MANUAL_REVIEW, a review case is open, and a signed 'opened' message is refused"
         )
+        case_id = _open_case(stack, application_id)
+        _operator(stack, "op-supervisor-1", "decide", "--case", case_id, "--decision", "REJECT")
+        expect(_status(stack, application_id) == "REJECTED", "the person's decision")
+        expect(provider_opens(stack, application_id) == 403, "no OPENED after a rejection")
+        say(
+            "OPERATOR",
+            "op-supervisor-1 (synthetic) decided REJECT on the trusted console, not over HTTP",
+        )
+        say(
+            "BANK",
+            "REJECTED: a person can end the case, but no decision of a person opens a depot",
+        )
     finally:
         browser.close()
         if agent.process.poll() is None:
             agent.process.kill()
+
+
+def _open_case(stack: TrustStack, application_id: str) -> str:
+    with contextlib.closing(_db(stack)) as db:
+        rows = db.execute(
+            "SELECT case_id FROM review_cases WHERE application_id = ? AND status != 'CLOSED'",
+            (application_id,),
+        ).fetchall()
+    expect(len(rows) == 1, "exactly one open review case")
+    return rows[0]["case_id"]
+
+
+def _operator(stack: TrustStack, operator_id: str, *arguments: str) -> None:
+    """The bank-staff console as its own process on the bank's database; there is no HTTP route."""
+    result = subprocess.run(  # noqa: S603 - our own interpreter and module
+        [sys.executable, "-m", "scripts.dev_operator", "--operator", operator_id, *arguments],
+        cwd=ROOT,
+        env={
+            **_clean_environment(),
+            "TRUSTEQ_DATABASE_URL": f"sqlite:///{stack.db_path.as_posix()}",
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    expect(result.returncode == 0, result.stdout[-400:] + result.stderr[-400:])
 
 
 def failed_signature(stack: TrustStack) -> None:

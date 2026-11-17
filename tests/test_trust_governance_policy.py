@@ -539,3 +539,94 @@ def test_the_scope_list_of_the_harness_matches_the_delegable_set() -> None:
 
     assert frozenset(ALL_SCOPES.split()) == DELEGABLE_SCOPES
     assert AuditActorType.AGENT.value == "agent"
+
+
+# --- the business example of the presentation ---------------------------------------------------
+
+
+def test_the_channel_conflict_business_example_end_to_end(world) -> None:
+    """A partner customer arrives through her own agent, a second partner claims her, the account
+    continues, a forgery and a machine are refused, and only a person settles the attribution."""
+    from app.services.review_service import OperatorNotPermittedError
+
+    # 1. Alice has an existing relationship with Sampletown Cooperative Bank (synthetic register).
+    world.login("alice")
+    with SqlAlchemyUnitOfWork(world.app.state.session_factory) as uow:
+        uow.trust.add(
+            PartnerRelationshipRow(
+                customer_ref=world.customer_ref("alice"),
+                partner_id="sampletown-coop-bank",
+                verified_source="synthetic partner register",
+                created_at=world.clock(),
+            )
+        )
+        uow.commit()
+    # 2. Later her independent agent opens the depot through the direct digital channel.
+    agent, started = _started(world)
+    application_id = started["application_id"]
+    _customer_finishes(world, agent, started)
+    assert _latest(world, application_id)[1:3] == (OUTCOME_PARTNER, "sampletown-coop-bank")
+
+    # 3. A forged referral naming Sampletown is rejected and recorded; it changes nothing.
+    forged = sign_referral(world, "sampletown-coop-bank", key=generate_key("forger"))
+    assert _refer(world, agent, started, forged)["outcome"] == OUTCOME_PARTNER
+    # 4. The agent then carries a valid signed referral of a second partner: a genuine conflict.
+    conflict = _refer(world, agent, started, sign_referral(world, "riverside-sample-bank"))
+    assert conflict["outcome"] == OUTCOME_CONFLICT
+    governance = _governance(world)
+    decision = governance.latest_decision(application_id)
+    assert decision["partner_id"] is None
+    assert decision["commission"] == {"status": "WITHHELD", "reason": "attribution_conflict"}
+    claims = _claims(world, application_id)
+    assert ("sampletown-coop-bank", "ACCEPTED") in {(c[0], c[2]) for c in claims}
+    assert ("riverside-sample-bank", "ACCEPTED") in {(c[0], c[2]) for c in claims}
+    assert ("sampletown-coop-bank", "REJECTED", "forged_referral") in {
+        (c[0], c[2], c[3]) for c in claims
+    }
+    # 5. The conflict does not stop the customer's account.
+    assert world.status_of(application_id) == "CONTRACT_PENDING"
+
+    # 6. Neither a model nor the agent can settle it; a person cannot invent a partner.
+    for machine in ("claude-sonnet-5-5", "personal-agent-demo"):
+        with pytest.raises(OperatorNotPermittedError):
+            governance.resolve_by_person(
+                operator_id=machine,
+                application_id=application_id,
+                partner_id="sampletown-coop-bank",
+                cid="c",
+            )
+    with pytest.raises(Exception, match="not found"):  # noqa: PT011
+        governance.resolve_by_person(
+            operator_id="op-supervisor-1",
+            application_id=application_id,
+            partner_id="invented-partner",
+            cid="c",
+        )
+    # 7. A person decides among the accepted claims: the existing relationship.
+    resolved = governance.resolve_by_person(
+        operator_id="op-supervisor-1",
+        application_id=application_id,
+        partner_id="sampletown-coop-bank",
+        cid="c",
+    )
+    assert resolved["outcome"] == OUTCOME_RESOLVED
+    assert resolved["decided_by"] == "op-supervisor-1"
+    # 8. Technical attribution is not a commission entitlement: nothing becomes payable.
+    assert resolved["commission"]["status"] == "CALCULATED_DEMONSTRATION_ONLY"
+    assert resolved["commission"]["payable"] is False
+    assert resolved["commission"]["inducement_review_required"] is True
+
+    # 9. The evidence stays: every decision in order, each with its policy version.
+    history = world.sql(
+        "SELECT outcome, policy_version FROM attribution_decisions "
+        "WHERE application_id = :a ORDER BY sequence",
+        a=application_id,
+    )
+    assert [row[0] for row in history][-3:] == [OUTCOME_PARTNER, OUTCOME_CONFLICT, OUTCOME_RESOLVED]
+    assert all(row[1] for row in history)
+    decided = world.sql(
+        "SELECT COUNT(*) FROM audit_events "
+        "WHERE application_id = :a AND event_type = 'attribution.decided'",
+        a=application_id,
+    )[0][0]
+    assert decided >= 3

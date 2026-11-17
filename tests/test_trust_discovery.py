@@ -52,6 +52,7 @@ def test_the_agent_card_is_at_the_a2a_well_known_uri_with_the_required_fields(wo
     }
     assert {s["id"] for s in card["skills"]} == {
         "product-information",
+        "product-question",
         "product-comparison",
         "document-retrieval",
         "human-escalation",

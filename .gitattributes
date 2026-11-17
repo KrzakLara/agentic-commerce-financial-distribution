@@ -1,0 +1,18 @@
+# Line endings. The repository stores LF, and every checkout keeps LF on every system,
+# whatever core.autocrlf is set to.
+# Why: tests/test_agent_trusted_claims.py compares the SHA-256 of app/agents/llm.py, byte for byte,
+# with the digest recorded by the live evaluation of 4 November 2026
+# (docs/evaluation/phase-05-live-results.json). A CRLF checkout changes that digest.
+* text=auto eol=lf
+
+# The byte-hashed source, stated explicitly so that a later change of the rule above cannot convert it.
+app/agents/llm.py text eol=lf
+
+# Binary artifacts: never converted, never diffed as text.
+*.pptx binary
+*.mp4 binary
+*.webm binary
+*.png binary
+*.jpg binary
+*.pdf binary
+*.zip binary

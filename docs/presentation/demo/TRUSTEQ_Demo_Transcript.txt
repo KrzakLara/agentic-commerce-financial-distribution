@@ -1,0 +1,126 @@
+TRUSTEQ - full-trust journey across separate processes (SYNTHETIC, local, no model, no real provider)
+  BANK          services up: 4 separate processes on 127.0.0.1
+
+== A. The integrated journey: discovery to a synthetic OPENED
+  AGENT PROCESS discovered_origin: {"origin": "http://127.0.0.1:55572", "how": "known origin or configured federation list"}
+  AGENT PROCESS provider_verified: {"entity_id": "http://127.0.0.1:55572", "metadata_integrity": "VERIFIED", "organization_identity": "ASSERTED_BY_SYNTHETIC_AUTHORITY_TEST_ONLY", "feder
+  AGENT PROCESS card_verified: {"protocol": "1.0", "binding": "JSONRPC", "skills": ["depot-onboarding", "document-retrieval", "human-escalation", "product-comparison", "product-info
+  AGENT PROCESS profile_verified: {"legal_name": "Example Depot Bank AG (MOCK)", "synthetic": true, "regulatory": "NOT_ESTABLISHED", "escalation": "The customer presses 'Speak to a per
+  AGENT PROCESS catalog_read: {"product_id": "depot-basic", "product_version": "2026.11", "facts": 6, "documents": ["kid-depot-basic", "pli-depot-basic"]}
+  AGENT PROCESS verified_fact: {"result": "VERIFIED_FACT", "statement": "According to the verified synthetic price list pli-depot-basic version 2026.11, the custody fee of depot-bas
+  AGENT PROCESS delegation_requested: {"delegation_id": "dlg-5024a7dcda4e4c5091648d82c08a7043"}
+  CUSTOMER      opens the agent's link, signs in at the identity provider, sees the request
+  CUSTOMER      allowed this agent: limited scopes, this product, this channel
+  AGENT PROCESS delegation_granted: {"scope": "create_draft read_status request_handoff submit_after_consent", "token_type": "DPoP", "customer_ref_is_pseudonymous": true}
+  AGENT PROCESS application_prepared: {"application_id": "app-293124ff4d944d869046e6d27d24fd3f", "state": "DRAFT"}
+  AGENT PROCESS referral_carried: {"outcome": "PARTNER_ATTRIBUTED", "sequence": 1}
+  AGENT PROCESS customer_confirmation_requested: {}
+  TEST PROVIDER identity result VERIFIED: synthetic, regulatory_evidence=false
+  CUSTOMER      supplied tax information and answers, then confirmed the exact action
+  CUSTOMER      authorized signing of package 02d41ec1f221a35e...
+  TEST SIGNER   signed callback sent: no legal effect, not a QES
+  AGENT PROCESS verified_answer: {"outcome": "VERIFIED_ANSWER", "claims": ["fixture-bank/depot-basic/FEE/custody", "fixture-bank/depot-basic/FEE/order"], "sources": ["pli-depot-basic"
+  BANK          answered the agent's question from verified facts; no model text released
+  AGENT PROCESS submitted: {"state": "IN_PROGRESS"}
+  MOCK PROVIDER signed confirmation accepted: the only path to OPENED
+  AGENT PROCESS final_status: {"state": "OPENED"}
+
+== B. The audit evidence of that application
+  BANK          agent personal-agent-demo, customer reference cid-424b46f3...
+  BANK          delegation dlg-5024a7dcda4e... assurance oidc_authenticated_not_proofed
+  BANK          policy version regulatory-matrix-2026.11-engineering
+  BANK          product version 2026.11, terms digest in the package
+  BANK          contract hash 02d41ec1f221a35e... in the package, the signature and the audit
+  BANK          signature SIGNED, level TEST_NO_LEGAL_EFFECT, legal effect none
+  BANK          attribution PARTNER_ATTRIBUTED to sampletown-coop-bank, by policy
+  BANK          commission status CALCULATED_DEMONSTRATION_ONLY, not payable
+  BANK          no tax identifier in any table, no raw token in the evidence tables
+  BANK          agent's question: VERIFIED_ANSWER, sources pli-depot-basic
+  BANK          the opening event names the delegation, consent, policy, sources and the hash
+
+== B2. The audit trail of that application, in order
+  AUDIT         application.created                      agent     success
+  AUDIT         attribution.referral_recorded            agent     success
+  AUDIT         attribution.decided                      system    success
+  AUDIT         application.transition                   system    success
+  AUDIT         handoff.created                          agent     success
+  AUDIT         identity_proofing.started                customer  success
+  AUDIT         identity_proofing.result                 provider  success
+  AUDIT         customer_information.tax_validated       customer  success
+  AUDIT         customer_information.assessment_recorded customer  success
+  AUDIT         application.transition                   customer  success
+  AUDIT         policy.evaluated                         system    success
+  AUDIT         handoff.confirmed                        customer  success
+  AUDIT         application.transition                   system    success
+  AUDIT         application.transition                   system    success
+  AUDIT         application.transition                   system    success
+  AUDIT         contract.confirmation_recorded           system    success
+  AUDIT         contract.package_prepared                system    success
+  AUDIT         contract.signing_authorized              customer  success
+  AUDIT         contract.signature_result                provider  success
+  AUDIT         communication.answer_released            agent     success
+  AUDIT         policy.evaluated                         system    success
+  AUDIT         application.transition                   system    success
+  AUDIT         application.submitted                    agent     success
+  AUDIT         application.transition                   provider  success
+  AUDIT         provider.confirmation_accepted           provider  success
+
+== C. Negative: forged or untrusted provider identity
+  AGENT PROCESS an anchor it does not trust -> refused: untrusted_anchor
+  AGENT PROCESS an authority signed with another key -> refused: bad_signature
+
+== D. Negative: a revoked delegation attempts an action
+  AGENT PROCESS discovered_origin: {"origin": "http://127.0.0.1:55572", "how": "known origin or configured federation list"}
+  AGENT PROCESS provider_verified: {"entity_id": "http://127.0.0.1:55572", "metadata_integrity": "VERIFIED", "organization_identity": "ASSERTED_BY_SYNTHETIC_AUTHORITY_TEST_ONLY", "feder
+  AGENT PROCESS card_verified: {"protocol": "1.0", "binding": "JSONRPC", "skills": ["depot-onboarding", "document-retrieval", "human-escalation", "product-comparison", "product-info
+  AGENT PROCESS profile_verified: {"legal_name": "Example Depot Bank AG (MOCK)", "synthetic": true, "regulatory": "NOT_ESTABLISHED", "escalation": "The customer presses 'Speak to a per
+  AGENT PROCESS catalog_read: {"product_id": "depot-basic", "product_version": "2026.11", "facts": 6, "documents": ["kid-depot-basic", "pli-depot-basic"]}
+  AGENT PROCESS verified_fact: {"result": "VERIFIED_FACT", "statement": "According to the verified synthetic price list pli-depot-basic version 2026.11, the custody fee of depot-bas
+  AGENT PROCESS delegation_requested: {"delegation_id": "dlg-291c6f1ee4fe4f428dde40ed24e4935c"}
+  AGENT PROCESS delegation_granted: {"scope": "create_draft read_status request_handoff submit_after_consent", "token_type": "DPoP", "customer_ref_is_pseudonymous": true}
+  AGENT PROCESS application_prepared: {"application_id": "app-42352cc8bee546e2a97de6d1837f858f", "state": "DRAFT"}
+  AGENT PROCESS customer_confirmation_requested: {}
+  CUSTOMER      withdrew the delegation on the bank's page
+  AGENT PROCESS revoked_delegation_refused: {"detail": {"code": -32041, "message": "The credential was refused.", "data": {"code": "invalid_token"}}}
+  BANK          state AWAITING_AUTHORIZATION: nothing advanced
+
+== E. Negative: failed identification needs a person
+  AGENT PROCESS discovered_origin: {"origin": "http://127.0.0.1:55572", "how": "known origin or configured federation list"}
+  AGENT PROCESS provider_verified: {"entity_id": "http://127.0.0.1:55572", "metadata_integrity": "VERIFIED", "organization_identity": "ASSERTED_BY_SYNTHETIC_AUTHORITY_TEST_ONLY", "feder
+  AGENT PROCESS card_verified: {"protocol": "1.0", "binding": "JSONRPC", "skills": ["depot-onboarding", "document-retrieval", "human-escalation", "product-comparison", "product-info
+  AGENT PROCESS profile_verified: {"legal_name": "Example Depot Bank AG (MOCK)", "synthetic": true, "regulatory": "NOT_ESTABLISHED", "escalation": "The customer presses 'Speak to a per
+  AGENT PROCESS catalog_read: {"product_id": "depot-basic", "product_version": "2026.11", "facts": 6, "documents": ["kid-depot-basic", "pli-depot-basic"]}
+  AGENT PROCESS verified_fact: {"result": "VERIFIED_FACT", "statement": "According to the verified synthetic price list pli-depot-basic version 2026.11, the custody fee of depot-bas
+  AGENT PROCESS delegation_requested: {"delegation_id": "dlg-bbcad482420f468e99fc7b107f83dc74"}
+  AGENT PROCESS delegation_granted: {"scope": "create_draft read_status request_handoff submit_after_consent", "token_type": "DPoP", "customer_ref_is_pseudonymous": true}
+  AGENT PROCESS application_prepared: {"application_id": "app-c5ed6b76c328422aaed36e3ae77ee272", "state": "DRAFT"}
+  AGENT PROCESS customer_confirmation_requested: {}
+  TEST PROVIDER identity result REJECTED
+  AGENT PROCESS verified_answer: {"outcome": "VERIFIED_ANSWER", "claims": ["fixture-bank/depot-basic/FEE/custody", "fixture-bank/depot-basic/FEE/order"], "sources": ["pli-depot-basic"
+  AGENT PROCESS submit_refused: {"detail": {"code": -32042, "message": "The bank refused this action.", "data": {"code": "prerequisites_not_met"}}}
+  BANK          MANUAL_REVIEW, a review case is open, and a signed 'opened' message is refused
+  OPERATOR      op-supervisor-1 (synthetic) decided REJECT on the trusted console, not over HTTP
+  BANK          REJECTED: a person can end the case, but no decision of a person opens a depot
+
+== F. Negative: a declined signature needs a person
+  AGENT PROCESS discovered_origin: {"origin": "http://127.0.0.1:55572", "how": "known origin or configured federation list"}
+  AGENT PROCESS provider_verified: {"entity_id": "http://127.0.0.1:55572", "metadata_integrity": "VERIFIED", "organization_identity": "ASSERTED_BY_SYNTHETIC_AUTHORITY_TEST_ONLY", "feder
+  AGENT PROCESS card_verified: {"protocol": "1.0", "binding": "JSONRPC", "skills": ["depot-onboarding", "document-retrieval", "human-escalation", "product-comparison", "product-info
+  AGENT PROCESS profile_verified: {"legal_name": "Example Depot Bank AG (MOCK)", "synthetic": true, "regulatory": "NOT_ESTABLISHED", "escalation": "The customer presses 'Speak to a per
+  AGENT PROCESS catalog_read: {"product_id": "depot-basic", "product_version": "2026.11", "facts": 6, "documents": ["kid-depot-basic", "pli-depot-basic"]}
+  AGENT PROCESS verified_fact: {"result": "VERIFIED_FACT", "statement": "According to the verified synthetic price list pli-depot-basic version 2026.11, the custody fee of depot-bas
+  AGENT PROCESS delegation_requested: {"delegation_id": "dlg-2011a73168c74199ac144db86ad52e60"}
+  AGENT PROCESS delegation_granted: {"scope": "create_draft read_status request_handoff submit_after_consent", "token_type": "DPoP", "customer_ref_is_pseudonymous": true}
+  AGENT PROCESS application_prepared: {"application_id": "app-2d6604d332fc46e5bee0524ce8aa7f17", "state": "DRAFT"}
+  AGENT PROCESS customer_confirmation_requested: {}
+  CUSTOMER      the answers gave a warning: acknowledged, and the account is not refused
+  TEST SIGNER   declined
+  AGENT PROCESS verified_answer: {"outcome": "VERIFIED_ANSWER", "claims": ["fixture-bank/depot-basic/FEE/custody", "fixture-bank/depot-basic/FEE/order"], "sources": ["pli-depot-basic"
+  AGENT PROCESS submit_refused: {"detail": {"code": -32042, "message": "The bank refused this action.", "data": {"code": "prerequisites_not_met"}}}
+  BANK          MANUAL_REVIEW, and no signature means no depot
+
+== G. The services' logs
+  BANK          checked 4 local service logs at this run's level: none found
+
+RESULT: PASS - the journey and its negative cases behaved as the bank's controls require.
+Reminder: local and synthetic. No regulated identification and no qualified signature took place. The trust authority vetted nobody, and no licence was established.

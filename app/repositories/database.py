@@ -4,8 +4,13 @@
 * `init_database` creates the schema, upgrades older schemas in place and records the schema
   version in ``PRAGMA user_version``. A database from a newer version is refused.
 
-Upgrade steps (each checks the current state first, so an interrupted upgrade simply resumes on
-the next start; SQLite DDL is not reliably transactional through the pysqlite driver):
+The whole upgrade runs in ONE explicit transaction (`_begin_atomic`). Through the pysqlite driver,
+DDL otherwise commits statement by statement, so a failure after a rename used to leave a
+half-upgraded schema behind. Now a failed step rolls everything back and the database stays at its
+old version. Each step still checks the current state first, so a database that an older version
+of this code left half-upgraded is completed on the next start.
+
+Upgrade steps:
 
 * v2 -> v3 (Phase 03): ``mandates`` is rebuilt (nullable application binding, ``kind``,
   ``issuer``); rows are carried over as ``onboarding`` grants.
@@ -14,11 +19,13 @@ the next start; SQLite DDL is not reliably transactional through the pysqlite dr
   application-identity trigger is added; ``review_cases`` and ``channel_attributions`` are new.
 * v4 -> v5 (final integration): ``tax_information`` and ``appropriateness_assessments`` are new
   tables. Nothing existing changes; ``create_all`` adds them and existing rows stay untouched.
-* v5 -> v6 (trust integration): only new tables (`app.repositories.trust_orm`), in the same way.
+* v5 -> v6 (trust integration): new tables (`app.repositories.trust_orm`), in the same way, and
+  ``review_cases`` is rebuilt: v6 added two review reasons (`IDENTITY_PROOFING_NOT_COMPLETED`,
+  `SIGNATURE_NOT_COMPLETED`) to its CHECK list. Rows, indexes and triggers are carried over.
 
-SQLite cannot drop a NOT NULL / UNIQUE constraint in place, hence "rebuild": rename the old
-table, let ``create_all`` create the new one with all constraints and triggers, copy the rows,
-verify none is missing, drop the old table.
+SQLite cannot drop a NOT NULL / UNIQUE constraint or change a CHECK constraint in place, hence
+"rebuild": rename the old table, let ``create_all`` create the new one with all constraints,
+indexes and triggers, copy the rows, verify none is missing, drop the old table.
 """
 
 from dataclasses import dataclass
@@ -28,13 +35,15 @@ from sqlalchemy import Connection, Engine, create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.domain.enums import ReviewCaseReason
 from app.domain.mandate import AUTHORIZATION_ISSUER
 
 # 2: Phase 02 adds mandates, handoffs, receipts, checks
 # 3: Phase 03 rebuilds mandates; adds agent_access_tokens and customer_sessions
 # 4: Phase 04 check attempts, review cases, channel attributions, disclosure binding
 # 5: final integration adds tax_information and appropriateness_assessments (new tables only)
-# 6: trust integration adds delegation, identity, contract, attribution and policy tables (new only)
+# 6: trust integration adds delegation, identity, contract, attribution and policy tables, and
+#    rebuilds review_cases for its two new reasons
 SCHEMA_VERSION = 6
 _MEMORY_URLS = {"sqlite://", "sqlite:///:memory:"}
 
@@ -83,17 +92,35 @@ def _columns(connection: Connection, table: str) -> set[str]:
     return {row[1] for row in rows}
 
 
+def _table_sql(connection: Connection, table: str) -> str:
+    """The table's CREATE statement as SQLite stores it, or an empty string."""
+    sql = connection.execute(
+        text("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = :name"),
+        {"name": table},
+    ).scalar()
+    return sql or ""
+
+
 @dataclass(frozen=True)
 class _Rebuild:
     table: str
     legacy: str  # temporary name of the old table while the new one is filled
-    marker: str  # a column only the NEW schema has: its absence means "old schema"
+    marker: str | None  # a column only the NEW schema has: its absence means "old schema"
     triggers: tuple[str, ...]  # old triggers that would otherwise follow the renamed table
     columns: str  # target column list
     select: str  # matching select list over the old table (constants allowed)
     key: str  # primary key used to verify that every row was carried over
+    # Text only the NEW table definition contains, such as a value added to a CHECK list: its
+    # absence means "old schema" as well.
+    marker_sql: tuple[str, ...] = ()
+    indexes: tuple[str, ...] = ()  # old named indexes: they would follow the renamed table too
 
 
+_REVIEW_CASE_COLUMNS = (
+    "case_id, application_id, reason, status, check_type, check_attempt, request_category, "
+    "interrupted_step, opened_by, requested_information, evidence, resolution, resolved_by, "
+    "resolved_at, created_at, updated_at, version"
+)
 _REBUILDS = (
     _Rebuild(  # v2 -> v3
         table="mandates",
@@ -115,6 +142,21 @@ _REBUILDS = (
         select="id, application_id, check_type, outcome, reference, mock, created_at, 1",
         key="id",
     ),
+    _Rebuild(  # v5 -> v6: two review reasons were added to the CHECK list
+        table="review_cases",
+        legacy="_review_cases_v5",
+        marker=None,
+        marker_sql=tuple(f"'{reason.value}'" for reason in ReviewCaseReason),
+        triggers=(
+            "trg_review_cases_closed_is_final",
+            "trg_review_cases_facts_are_immutable",
+            "trg_review_cases_no_delete",
+        ),
+        indexes=("ix_review_cases_application_id", "uq_review_cases_one_active_per_application"),
+        columns=_REVIEW_CASE_COLUMNS,
+        select=_REVIEW_CASE_COLUMNS,
+        key="case_id",
+    ),
 )
 # v3 -> v4: plain additions to an existing table (nullable, so ALTER TABLE ADD COLUMN works).
 _ADDED_COLUMNS = {
@@ -128,13 +170,22 @@ _ADDED_COLUMNS = {
 }
 
 
+def _is_old(connection: Connection, step: _Rebuild, columns: set[str]) -> bool:
+    if step.marker is not None and step.marker not in columns:
+        return True
+    definition = _table_sql(connection, step.table)
+    return any(fragment not in definition for fragment in step.marker_sql)
+
+
 def _set_aside(connection: Connection, step: _Rebuild) -> None:
     """Rebuild, part 1: move an old-schema table out of the way (if there is one)."""
     columns = _columns(connection, step.table)
-    if not columns or step.marker in columns or _columns(connection, step.legacy):
+    if not columns or _columns(connection, step.legacy) or not _is_old(connection, step, columns):
         return
     for trigger in step.triggers:  # else CREATE TRIGGER IF NOT EXISTS would skip the new table
         connection.execute(text(f"DROP TRIGGER IF EXISTS {trigger}"))
+    for index in step.indexes:  # else create_all could not create the new table's indexes
+        connection.execute(text(f"DROP INDEX IF EXISTS {index}"))
     connection.execute(text(f"ALTER TABLE {step.table} RENAME TO {step.legacy}"))
 
 
@@ -167,11 +218,27 @@ def _add_missing_columns(connection: Connection) -> None:
                 connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))
 
 
+def _begin_atomic(connection: Connection) -> None:
+    """Open the transaction explicitly, so that DDL is part of it and rolls back with it.
+
+    pysqlite only begins a transaction before data changes; without this, every CREATE, ALTER and
+    DROP of an upgrade would commit at once. IMMEDIATE also keeps a second starting process out
+    until the upgrade is done.
+    """
+    raw = connection.connection.dbapi_connection
+    if connection.dialect.name == "sqlite" and not getattr(raw, "in_transaction", True):
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+
+
 def init_database(engine: Engine) -> None:
-    """Create tables, indexes and triggers if missing, upgrade older schemas, stamp the version."""
+    """Create tables, indexes and triggers if missing, upgrade older schemas, stamp the version.
+
+    All or nothing: a failure rolls the whole upgrade back (see the module docstring).
+    """
     from app.repositories import orm, trust_orm  # noqa: F401 (registers the models on Base.metadata)
 
     with engine.begin() as connection:
+        _begin_atomic(connection)
         version = connection.execute(text("PRAGMA user_version")).scalar_one()
         if version > SCHEMA_VERSION:
             raise SchemaVersionError(

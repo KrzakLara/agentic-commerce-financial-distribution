@@ -1,14 +1,17 @@
 import uuid
+from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import Depends, Request
 
+from app.agents.factory import answer_model_client, build_answer_proposer
 from app.container import AppContainer
-from app.core.config import Settings
+from app.core.config import AIExecutionMode, Settings
 from app.integrations.remote_providers import RemoteProofingProvider, RemoteSigningProvider
 from app.repositories.sqlalchemy_repositories import SqlAlchemyUnitOfWork
 from app.services.application_service import ApplicationService
 from app.services.authorization_service import AuthorizationService
+from app.services.communication_contract import proposal_json_schema
 from app.services.contract_execution import ContractExecutionService
 from app.services.customer_information_service import CustomerInformationService
 from app.services.customer_session_service import CustomerSessionService
@@ -20,6 +23,7 @@ from app.services.onboarding_service import OnboardingService
 from app.services.regulated_communication import CommunicationGuard
 from app.services.review_service import ReviewService
 from app.services.trust_gates import TrustGates
+from app.services.verified_llm import QuestionBudget, VerifiedFactsGateway, VerifiedLlmAgent
 
 
 def get_app_settings(request: Request) -> Settings:
@@ -271,6 +275,7 @@ def get_contract_service(
         level=settings.signature_level,
         ttl_seconds=settings.signature_ttl_seconds,
         clock=container.clock,
+        catalog=container.catalog,
     )
 
 
@@ -282,6 +287,45 @@ def get_communication_guard(container: ContainerDep) -> CommunicationGuard:
 
 
 CommunicationGuardDep = Annotated[CommunicationGuard, Depends(get_communication_guard)]
+
+
+def get_verified_llm_agent(
+    settings: SettingsDep, container: ContainerDep, guard: CommunicationGuardDep
+) -> Callable[[], VerifiedLlmAgent]:
+    """Builds the pipeline when a question arrives, so other A2A requests need no model client.
+
+    The proposer gets the fact gateway and nothing else: that is all a model can reach.
+    """
+
+    def build() -> VerifiedLlmAgent:
+        if container.answer_budget is None:
+            container.answer_budget = QuestionBudget(settings.llm_max_questions_per_process)
+        if (
+            container.answer_model_client is None
+            and settings.ai_execution_mode is AIExecutionMode.LLM
+            and settings.llm_api_key is not None
+        ):
+            container.answer_model_client = answer_model_client(settings)
+        proposer = build_answer_proposer(
+            settings,
+            VerifiedFactsGateway(guard),
+            proposal_json_schema(),
+            container.answer_model_client,
+        )
+        return VerifiedLlmAgent(guard, proposer, budget=container.answer_budget)
+
+    return build
+
+
+VerifiedLlmAgentDep = Annotated[Callable[[], VerifiedLlmAgent], Depends(get_verified_llm_agent)]
+
+
+def questions_need_a_credential(settings: Settings) -> bool:
+    """In LLM mode a question costs money, so an anonymous caller cannot spend it."""
+    return (
+        settings.ai_execution_mode is AIExecutionMode.LLM
+        and settings.llm_questions_require_credential
+    )
 
 
 def get_correlation_id(request: Request) -> str:

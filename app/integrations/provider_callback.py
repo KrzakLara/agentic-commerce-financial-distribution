@@ -18,6 +18,7 @@ from dataclasses import dataclass
 SIGNATURE_HEADER = "X-Provider-Signature"
 TIMESTAMP_HEADER = "X-Provider-Timestamp"
 MAX_CLOCK_SKEW_SECONDS = 300
+MAX_TIMESTAMP_DIGITS = 12  # seconds since the epoch: 10 digits until the year 2286
 _PREFIX = "sha256="
 
 
@@ -30,7 +31,17 @@ def verify(
     secret: bytes, *, timestamp: str | None, signature: str | None, body: bytes, now: float
 ) -> bool:
     """Constant-time signature check plus freshness. Any malformed input is simply False."""
-    if not timestamp or not signature or not timestamp.isdigit():
+    if not timestamp or not signature:
+        return False
+    # ASCII only: str.isdigit() accepts digits such as "²" that int() rejects, and
+    # hmac.compare_digest() raises on non-ASCII text. Bounded length: a longer digit string
+    # overflows the float subtraction below, or int()'s digit limit. Each would be a server error.
+    if not (
+        timestamp.isascii()
+        and timestamp.isdigit()
+        and len(timestamp) <= MAX_TIMESTAMP_DIGITS
+        and signature.isascii()
+    ):
         return False
     if abs(now - int(timestamp)) > MAX_CLOCK_SKEW_SECONDS:
         return False

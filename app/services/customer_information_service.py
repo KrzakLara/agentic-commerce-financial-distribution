@@ -35,6 +35,7 @@ from app.services.appropriateness import (
 from app.services.identity_proofing import latest_case
 from app.services.onboarding_service import OnboardingService
 from app.services.policy import evaluate_customer_information
+from app.services.regulatory_policy import Service, service_applicability
 from app.services.tax_information import (
     TaxDataSource,
     TaxValidationResult,
@@ -231,6 +232,11 @@ class CustomerInformationService:
                     "reasons": list(record.reasons),
                     "product_level": record.product_level,
                     "rule_set_version": record.rule_set_version,
+                    # Which service the result is for. It is not a gate on the account itself.
+                    "assessed_for_service": Service.ORDER_NON_ADVISED.value,
+                    "account_opening_appropriateness": service_applicability({})[
+                        Service.ACCOUNT_OPENING.value
+                    ]["appropriateness"],
                 },
             )
             uow.commit()

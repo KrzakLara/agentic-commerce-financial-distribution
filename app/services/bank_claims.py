@@ -8,13 +8,15 @@ In the journey: `approved_claims` builds what the bank states about a product, a
 passes `validate_claim` first. It is served at
 ``GET /v1/providers/{id}/products/{id}/approved-claims``, and the agent tool `get_official_product`
 carries the structured kinds to the agent. ``POST /v1/claims/verify`` lets any client check a
-structured claim.
+structured claim. `app.services.verified_facts` builds the communication boundary's facts on these.
 
-Not covered: free-form model language. Nothing routes the LLM agent's own text through this check
-(`app/agents/llm.py` is unchanged and its digest is recorded evidence), and the wording filter below
-catches listed phrases, not every way to say something. The bank controls what it publishes and
-signs, not what a customer's personal agent then writes. No model is involved here, and catalog text
-is compared as data, never followed.
+A citation has to support its claim. Conditions and the risk summary are fields of the signed
+manifest and appear in no document's text, so the manifest is what they cite.
+
+Not covered: free-form model language. This module checks structured claims only, and the wording
+filter below catches listed phrases, not every way to say something. The bank controls what it
+publishes and signs, not what a customer's personal agent then writes. No model is involved here,
+and catalog text is compared as data, never followed.
 """
 
 import re
@@ -85,6 +87,11 @@ class ClaimVerdict(DomainModel):
         return self.decision is ClaimDecision.APPROVED
 
 
+def text_is_inert(text: str) -> bool:
+    """False for text that promises, recommends or instructs: such text is never a bank fact."""
+    return not (_OVERPROMISE.search(text) or _INSTRUCTION.search(text))
+
+
 def _verdict(decision: ClaimDecision, reason: str) -> ClaimVerdict:
     return ClaimVerdict(decision=decision, reason=reason, safe_response=SAFE_RESPONSE)
 
@@ -105,16 +112,12 @@ def manifest_citation(provider: Provider) -> SourceCitation:
     )
 
 
-def _approved_sources(kind: ClaimKind, product: Product) -> list[SourceCitation]:
-    """The risk summary rests on the disclosure document; fees and conditions on the listed ones."""
-    if kind is ClaimKind.RISK_SUMMARY:
-        return [
-            SourceCitation(
-                document_id=product.risk_document_id,
-                document_version=product.risk_document_version,
-                document_digest=product.risk_document_digest,
-            )
-        ]
+def _approved_sources(
+    kind: ClaimKind, product: Product, provider: Provider
+) -> list[SourceCitation]:
+    """What supports the claim. Narrative fields are in the signed manifest, not in a document."""
+    if kind in {ClaimKind.RISK_SUMMARY, ClaimKind.CONDITIONS}:
+        return [manifest_citation(provider)]
     return [
         SourceCitation(
             document_id=s.document_id,
@@ -129,7 +132,7 @@ def provider_identity_text(provider: Provider) -> str:
     return f"{provider.legal_name} ({provider.verified_domain})"
 
 
-def _check_product_claim(claim: Claim, product: Product) -> ClaimVerdict:
+def _check_product_claim(claim: Claim, product: Product, provider: Provider) -> ClaimVerdict:
     if claim.kind is ClaimKind.FEE:
         fee = next((f for f in product.fees if f.code == claim.subject), None)
         if fee is None:
@@ -145,7 +148,7 @@ def _check_product_claim(claim: Claim, product: Product) -> ClaimVerdict:
         return _escalate("instruction_like_text_in_the_catalog")
     if claim.text != approved_value:
         return _unsupported("value_differs_from_the_catalog")
-    if claim.source not in _approved_sources(claim.kind, product):
+    if claim.source not in _approved_sources(claim.kind, product, provider):
         return _unsupported("no_verified_source_reference")
     return ClaimVerdict(decision=ClaimDecision.APPROVED, reason="matches_the_verified_catalog")
 
@@ -193,7 +196,7 @@ def validate_claim(catalog: ProviderDiscoveryPort, claim: Claim) -> ClaimVerdict
         return _escalate("information_missing")
     if product is None:
         return _escalate("information_missing")
-    return _check_product_claim(claim, product)
+    return _check_product_claim(claim, product, provider)
 
 
 class ApprovedClaim(DomainModel):
@@ -249,20 +252,31 @@ def _candidates(
             f"{channel.partner_name} is a registered distribution partner on channel "
             f"{channel.channel_id}, according to the verified register.",
         )
-    risk = _approved_sources(ClaimKind.RISK_SUMMARY, product)[0]
+    manifest = manifest_citation(provider)
     if product.risk_summary:
         yield (
             Claim(
                 kind=ClaimKind.RISK_SUMMARY,
                 text=product.risk_summary,
-                source=risk,
+                source=manifest,
                 **identifiers,
             ),
-            f"According to the verified document {risk.document_id} version "
-            f"{risk.document_version}: {product.risk_summary}",
+            f"According to the verified manifest version {manifest.document_version}: "
+            f"{product.risk_summary}",
+        )
+    if product.conditions:
+        yield (
+            Claim(
+                kind=ClaimKind.CONDITIONS,
+                text=product.conditions,
+                source=manifest,
+                **identifiers,
+            ),
+            f"According to the verified manifest version {manifest.document_version}: "
+            f"{product.conditions}",
         )
     if not product.sources:
-        return  # no source to cite: nothing below may be stated
+        return  # no source to cite: no fee may be stated
     source = _citation(product.sources[0])
     for fee in product.fees:
         yield (
@@ -276,17 +290,6 @@ def _candidates(
             f"According to the verified synthetic price list {source.document_id} version "
             f"{source.document_version}, the {fee.code} fee of {product.product_id} is "
             f"{fee.amount}",
-        )
-    if product.conditions:
-        yield (
-            Claim(
-                kind=ClaimKind.CONDITIONS,
-                text=product.conditions,
-                source=source,
-                **identifiers,
-            ),
-            f"According to the verified document {source.document_id} version "
-            f"{source.document_version}: {product.conditions}",
         )
 
 

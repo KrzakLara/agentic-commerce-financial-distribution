@@ -41,7 +41,15 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.core.exceptions import CatalogIntegrityError, NotFoundError
-from app.domain.catalog import Channel, ChannelKind, Fee, Product, Provider, SourceReference
+from app.domain.catalog import (
+    Channel,
+    ChannelKind,
+    EligibilityRule,
+    Fee,
+    Product,
+    Provider,
+    SourceReference,
+)
 from app.domain.enums import ProviderRole
 
 SIGNATURE_ALGORITHM = "HMAC-SHA256"
@@ -601,8 +609,12 @@ class FixtureProviderDiscovery:
             risk_class=item.get("risk_class"),
             risk_summary=item.get("risk_summary"),
             sources=tuple(SourceReference(**source) for source in item.get("sources", [])),
+            eligibility_rules=tuple(
+                EligibilityRule(**rule) for rule in item.get("eligibility_rules", [])
+            ),
             effective_from=item.get("effective_from"),
             published_at=item.get("published_at"),
+            valid_until=item.get("valid_until"),
             terms_digest=sha256_hex(canonical_json(terms)),
         )
 

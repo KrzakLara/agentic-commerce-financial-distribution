@@ -21,7 +21,9 @@ secrets (``tqs_...``) are never accepted on agent routes.
 
 LIMITATION (by design of the simulation): anyone who can complete the dev sign-in, including an
 untrusted HTTP client that scripts the form, can claim to be any customer. Preventing exactly
-that is the job of the real identity channel, which is out of scope.
+that is the job of the real identity channel, which is out of scope. The full-trust profile
+therefore refuses the DEV identity mode at start-up, switches the DEV sign-in off regardless, and
+accepts only sessions that a verified OIDC login created (`session_customer`).
 """
 
 import re
@@ -72,12 +74,19 @@ def session_customer(
     sessions: CustomerSessionService,
     cookie: str = SESSION_COOKIE,
 ) -> CustomerContext | None:
-    """The signed-in customer (ACTIVE server-side session behind `cookie`), or None."""
+    """The signed-in customer (ACTIVE server-side session behind `cookie`), or None.
+
+    In the full-trust profile only a session that a verified OIDC login of this customer created
+    counts. Any other, such as one a DEV sign-in left behind, is no customer on any route: not for a
+    delegation, the customer's information, identity proofing, the confirmation or the contract.
+    """
     if not settings.customer_sign_in_active:
         return None
     secret = request.cookies.get(cookie)
     session = sessions.resolve(secret)
     if session is None:
+        return None
+    if settings.full_trust_profile and not sessions.created_by_verified_login(session):
         return None
     return CustomerContext(
         session.customer_id, session.session_id, secret, settings.dev_customer_auth_active

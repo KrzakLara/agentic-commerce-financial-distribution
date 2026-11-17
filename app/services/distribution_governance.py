@@ -38,6 +38,7 @@ from app.repositories.trust_orm import (
     PartnerRelationshipRow,
 )
 from app.services.application_service import ApplicationService
+from app.services.review_service import OperatorNotPermittedError, resolve_dev_operator
 
 REFERRAL_TYPE = "partner-referral+jwt"
 SOURCE_CHANNEL = "REGISTERED_CHANNEL"
@@ -423,7 +424,13 @@ class DistributionGovernanceService:
     def resolve_by_person(
         self, *, operator_id: str, application_id: str, partner_id: str | None, cid: str
     ) -> dict[str, Any]:
-        """A person settles a conflict among the accepted claims. Trusted console only."""
+        """A person settles a conflict among the accepted claims. Trusted console only.
+
+        Only a known operator principal may decide: an agent id, a model name or any other
+        string is refused, so no attribution can be recorded as decided by a machine.
+        """
+        if resolve_dev_operator(operator_id) is None:
+            raise OperatorNotPermittedError()
         with self._uow_factory() as uow:
             latest = _latest(uow, application_id)
             application = uow.applications.get(application_id)

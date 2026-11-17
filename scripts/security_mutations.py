@@ -73,6 +73,7 @@ CATALOG = "app/integrations/catalog_fixture.py"
 DELEGATION = "app/services/delegation_service.py"
 CONTRACT = "app/services/contract_execution.py"
 PROOFING = "app/services/identity_proofing.py"
+GUARD = "app/services/regulated_communication.py"
 
 
 def m(key: str, control: str, path: str, *edits: tuple[str, str]) -> Mutant:
@@ -394,6 +395,56 @@ MUTANTS = [
     m("M93", "a card may send the agent to another origin", "external_agent/client.py",
       ('            if urlsplit(interface["url"]).netloc != expected:\n',
        "            if False:\n")),
+    # --- the communication boundary and the onboarding hardening (2026-11-07) -------------------
+    m("M94", "a proposed claim with a changed value is accepted", GUARD,
+      ("    if claim.value is not None and claim.value != fact.canonical_value:\n",
+       "    if False:\n")),
+    m("M95", "a model that tried a refused tool is still answered", "app/services/verified_llm.py",
+      ("        if run.rejected_tools:\n", "        if False:\n")),
+    m("M96", "a fee the cited price list does not state becomes a fact",
+      "app/services/verified_facts.py",
+      ("            if fee is not None and text is not None and fee_is_stated_in(fee, text):\n",
+       "            if fee is not None and text is not None:\n")),
+    m("M97", "a tax identifier in a question reaches the model", GUARD,
+      ("        return ReasonCode.SENSITIVE_DATA_IN_QUESTION if _SENSITIVE_INPUT.search(question) "
+       "else None\n", "        return None\n")),
+    m("M98", "a narrative value is forwarded into model traffic",
+      "app/services/communication_contract.py",
+      ('            "value": None if self.narrative else self.canonical_value,\n',
+       '            "value": self.canonical_value,\n')),
+    m("M99", "another document version is served as current", GUARD,
+      ("        if version != current_version:\n", "        if False:\n")),
+    m("M100", "a package for another action passes the submission gate", CONTRACT,
+      ("    if not _package_matches_application(uow, application, package):\n",
+       "    if False:\n")),
+    m("M101", "the full-trust gates can be switched off by a setting", FLOW,
+      ("        self._information_required = customer_information_required or trust is not None\n",
+       "        self._information_required = customer_information_required\n")),
+    m("M102", "a contract that no longer holds is not given to a person",
+      "app/services/trust_gates.py",
+      ("        if not problems:\n", "        if True:\n")),
+    m("M103", "a request for advice or orders becomes an account application",
+      "app/api/routes/agent_surface.py",
+      ("            _refuse_other_services(request, data, principal, applications, "
+       "correlation_id)\n", "")),
+    # --- the two blockers of the onboarding audit (2026-11-07) ----------------------------------
+    m("M104", "the full-trust profile starts next to the DEV identity mode", "app/core/config.py",
+      ('        if self.full_trust_profile and self.customer_identity_mode != "oidc":\n',
+       "        if False:\n")),
+    m("M105", "a session no verified login created counts in the full-trust profile",
+      "app/api/customer_auth.py",
+      ("    if settings.full_trust_profile and not sessions.created_by_verified_login(session):\n",
+       "    if False:\n")),
+    m("M106", "a copied settings object switches the DEV sign-in on in full trust",
+      "app/core/config.py",
+      ("            and not self.full_trust_profile\n", "")),
+    m("M107", "an upgraded version 5 review table keeps its old reasons",
+      "app/repositories/database.py",
+      ("        marker_sql=tuple(f\"'{reason.value}'\" for reason in ReviewCaseReason),\n",
+       "        marker_sql=(),\n")),
+    m("M108", "a failed upgrade leaves a half-upgraded schema behind",
+      "app/repositories/database.py",
+      ("        _begin_atomic(connection)\n", "")),
 ]  # fmt: skip
 
 

@@ -2,7 +2,11 @@
 
 import base64
 import json
+import os
 import re
+import subprocess
+import sys
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -251,6 +255,71 @@ def test_production_refuses_the_insecure_local_setting_and_a_regulated_claim() -
         Settings(_env_file=None, environment=Environment.TEST, proofing_provider_regulated=True)
 
 
+def test_the_full_trust_profile_refuses_the_dev_identity_mode() -> None:
+    for environment in (Environment.DEVELOPMENT, Environment.TEST):
+        with pytest.raises(ValueError, match="full_trust_profile requires customer_identity_mode"):
+            Settings(
+                _env_file=None,
+                environment=environment,
+                full_trust_profile=True,
+                customer_information_required=True,  # conftest switches it off for the P0 tests
+                customer_identity_mode="dev_simulated",
+            )
+
+
+def test_the_full_trust_profile_with_a_complete_oidc_setup_is_accepted(world) -> None:
+    settings = world.settings
+    assert settings.full_trust_profile and settings.customer_identity_mode == "oidc"
+    assert settings.oidc_login_active and not settings.dev_customer_auth_active
+
+
+def test_a_copied_settings_object_cannot_switch_the_dev_sign_in_on_in_full_trust(world) -> None:
+    """`model_copy` skips the validators. The DEV sign-in still stays off, and pages fail closed."""
+    copied = world.settings.model_copy(update={"customer_identity_mode": "dev_simulated"})
+    assert copied.full_trust_profile and not copied.dev_customer_auth_active
+    world.app.state.settings = copied
+    client = TestClient(world.app, base_url=BANK)
+    answer = client.post(
+        "/customer/dev-login",
+        data={"customer_id": "anyone", "handoff_id": "hnd-x", "token": "t" * 24, "login_csrf": "x"},
+    )
+    assert answer.status_code == 401
+    assert world.sql("SELECT COUNT(*) FROM customer_sessions") == [(0,)]
+
+
+def test_a_server_with_full_trust_and_the_dev_identity_mode_does_not_start(tmp_path) -> None:
+    """`uvicorn app.main:app` imports the module, and the module builds the settings first."""
+    database = tmp_path / "never-opened.db"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("TRUSTEQ_", "ANTHROPIC_"))}
+    env.update(
+        {
+            "PYTHONPATH": str(Path(__file__).resolve().parent.parent),
+            "TRUSTEQ_DATABASE_URL": f"sqlite:///{database.as_posix()}",
+            "TRUSTEQ_FULL_TRUST_PROFILE": "true",
+            "TRUSTEQ_CUSTOMER_IDENTITY_MODE": "dev_simulated",
+        }
+    )
+
+    def start() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603 - our own interpreter and module
+            [sys.executable, "-c", "import app.main"],
+            cwd=tmp_path,  # so that no .env file is read
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+    refused = start()
+    assert refused.returncode != 0
+    assert "full_trust_profile requires customer_identity_mode=oidc" in refused.stderr
+    env["TRUSTEQ_CUSTOMER_IDENTITY_MODE"] = "oidc"
+    accepted = start()
+    assert accepted.returncode == 0, accepted.stderr[-600:]
+    assert not database.exists()
+
+
 # --- identity proofing ------------------------------------------------------------------------
 
 
@@ -304,32 +373,67 @@ def test_the_json_confirmation_is_refused_without_proofing(world) -> None:
     assert world.status_of(started["application_id"]) == "AWAITING_AUTHORIZATION"
 
 
-def test_dev_sign_in_alone_cannot_start_proofing(tmp_path) -> None:
-    """The DEV fallback stays usable for the old flows, but it cannot reach regulated identity."""
-    with trust_world(customer_identity_mode="dev_simulated") as world:
-        from tests.flow import sign_in_browser
+def test_dev_sign_in_alone_cannot_start_proofing(world) -> None:
+    """A session that no verified login created is no customer in the full-trust profile.
 
-        agent = world.agent()
-        browser = TestClient(world.app, base_url=BANK)
-        sign_in_browser(browser, "cust-dev")
-        pushed = agent.request_delegation(scope=ALL_SCOPES, **OFFER)
-        world.decide(pushed, browser=browser)
-        rows = world.sql("SELECT identity_assurance FROM delegations")
-        assert rows == [("dev_simulated",)]
-        world.clock.advance(seconds=2)
-        assert agent.poll_token(pushed["device_code"]) == "issued"
-        started = artifact_of(
-            agent.call("depot-onboarding", agent.access_token, action="start", **OFFER)
-        )
-        link = world.request_link(agent, {"tokens": started["authorization"],
-                                          "application_id": started["application_id"]})  # fmt: skip
-        form = steps.page_form(browser.get(link).text, "/identity-proofing")
-        answer = browser.post(
-            form["_action"], data={"token": form["token"], "csrf_token": form["csrf_token"]}
-        )
-        assert answer.status_code == 403
-        assert "DEV sign-in is not enough" in answer.text
-        assert world.sql("SELECT COUNT(*) FROM identity_proofing_cases") == [(0,)]
+    Until 2026-11-07 the profile also ran with the DEV identity mode: a DEV session then approved an
+    agent's delegation and could supply the customer's information, and only the proofing step
+    stopped it. That mode is now refused at start-up (tests above). Here a DEV session for the
+    customer's own reference, as a leftover from the DEV profile would be, gets nowhere either.
+    """
+    from app.api.customer_auth import API_SESSION_COOKIE, SESSION_COOKIE
+    from app.repositories.sqlalchemy_repositories import SqlAlchemyUnitOfWork
+    from app.services.customer_session_service import CustomerSessionService, csrf_token
+
+    agent, _, started, link = _proofing_app(world)  # alice's own journey, with her OIDC login
+    handoff_id, nonce = link.split("/")[3].split("?")[0], link.split("token=")[1]
+    sessions = CustomerSessionService(
+        lambda: SqlAlchemyUnitOfWork(world.app.state.session_factory), clock=world.clock
+    )
+    _, secret = sessions.start(
+        customer_id=world.customer_ref("alice"),
+        replaces=None,
+        correlation_id="cid-dev-session",
+        simulated=True,  # exactly what the DEV sign-in creates: no authentication event
+    )
+    intruder = TestClient(world.app, base_url=BANK)
+    intruder.cookies.set(SESSION_COOKIE, secret, domain="bank.test", path="/customer")
+    intruder.cookies.set(API_SESSION_COOKIE, secret, domain="bank.test", path="/v1/customer")
+
+    page = intruder.get(link, follow_redirects=False)
+    assert page.status_code == 303 and "/customer/oidc/login" in page.headers["location"]
+    tax = intruder.post(
+        f"/v1/customer/handoffs/{handoff_id}/tax-information",
+        json={
+            "nonce": nonce,
+            "tax_residency_country": "DE",
+            "synthetic_tax_id": steps.SYNTHETIC_TAX_ID,
+            "us_person_declared": False,
+        },
+        headers={"X-CSRF-Token": csrf_token(secret, "tax", handoff_id)},
+    )
+    assert tax.status_code == 401
+    proofing = intruder.post(
+        f"/customer/handoffs/{handoff_id}/identity-proofing",
+        data={"token": nonce, "csrf_token": csrf_token(secret, "proofing", handoff_id)},
+    )
+    assert proofing.status_code == 401
+    pushed = agent.request_delegation(scope=ALL_SCOPES, **OFFER)
+    request_token = parse_qs(urlsplit(pushed["verification_uri_complete"]).query)["request"][0]
+    decision = intruder.post(
+        "/customer/delegations/authorize",
+        data={
+            "request": request_token,
+            "csrf_token": csrf_token(secret, "delegation", request_token),
+            "decision": "approve",
+        },
+    )
+    assert decision.status_code == 401
+    world.clock.advance(seconds=2)
+    assert agent.poll_token(pushed["device_code"]) == "pending"
+    assert world.sql("SELECT COUNT(*) FROM tax_information") == [(0,)]
+    assert world.sql("SELECT COUNT(*) FROM identity_proofing_cases") == [(0,)]
+    assert world.status_of(started["application_id"]) == "AWAITING_AUTHORIZATION"
 
 
 def _forge(world, key, **claims) -> str:

@@ -179,6 +179,23 @@ def journey(config: dict[str, Any]) -> None:
     )
     emit("customer_confirmation_requested", customer_link=handoff["customer_link"])
     _wait_for_customer("the customer verifies identity, supplies information, confirms and signs")
+    if not config.get("expect_revoked"):
+        answer = artifact_of(
+            agent.call(
+                "product-question",
+                tokens["status_token"],
+                question="What are the fees of this account?",
+                product_ids=[product["product_id"]],
+                application_id=application_id,
+            )
+        )
+        emit(
+            "verified_answer",
+            outcome=answer["outcome"],
+            claims=[claim["claim_id"] for claim in answer["claims"]],
+            sources=sorted({claim["source_id"] for claim in answer["claims"]}),
+            proposer=answer["generated_by"]["proposer"],
+        )
     if config.get("expect_revoked"):
         try:
             agent.call(

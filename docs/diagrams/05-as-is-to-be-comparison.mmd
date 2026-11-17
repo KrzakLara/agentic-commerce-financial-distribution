@@ -1,0 +1,45 @@
+flowchart LR
+  subgraph TODAY["Today: Ist"]
+    direction TB
+    T1["Customer finds the provider<br/>on a website or in a branch"]
+    T2["Customer fills in a paper<br/>or online application"]
+    T3["Identification in the branch,<br/>by video or online ID"]
+    T4["Costs, risks and terms<br/>read in separate PDFs"]
+    T5["Handwritten signature on paper<br/>or TAN release in online banking"]
+    T6["Acceptance notice with the depot number,<br/>online access activated separately"]
+  end
+
+  subgraph TARGET["2030: Soll"]
+    direction TB
+    N1["Agent discovers a verified provider<br/>and signed, versioned product facts"]
+    N2["Agent prepares the application,<br/>customer confirms the exact action"]
+    N3["Customer identifies with eID or<br/>EUDI Wallet in the bank channel"]
+    N4["Agent explains verified facts with sources,<br/>the bank refuses unsupported claims"]
+    N5["Customer authorizes an immutable package,<br/>signed in the legally required form"]
+    N6["Agent tracks a generic status,<br/>the customer keeps the bank channel"]
+  end
+
+  subgraph KEEP["Stays with the customer and the bank"]
+    direction TB
+    K1["Identity proof, consent and signature:<br/>the customer"]
+    K2["KYC, AML, appropriateness rules, opening:<br/>bank and regulated providers"]
+    K3["Advice and suitability:<br/>the advising bank, never the agent"]
+    K4["Commission and attribution:<br/>contracts and the bank's register"]
+  end
+
+  T1 --> N1
+  T2 --> N2
+  T3 --> N3
+  T4 --> N4
+  T5 --> N5
+  T6 --> N6
+
+  classDef today fill:#F0F0F0,stroke:#AE9966,stroke-width:1px,color:#000000
+  classDef target fill:#E8E9EB,stroke:#003366,stroke-width:1px,color:#000000
+  classDef keep fill:#003366,stroke:#003366,color:#FFFFFF
+  class T1,T2,T3,T4,T5,T6 today
+  class N1,N2,N3,N4,N5,N6 target
+  class K1,K2,K3,K4 keep
+  style TODAY fill:#FFFFFF,stroke:#AE9966
+  style TARGET fill:#FFFFFF,stroke:#003366
+  style KEEP fill:#FFFFFF,stroke:#003366,stroke-width:2px

@@ -163,3 +163,13 @@ class CustomerSessionService:
         with self._uow_factory() as uow:
             session = uow.customer_sessions.get_by_hash(hash_secret(secret))
         return session if session is not None and session.is_active(now) else None
+
+    def created_by_verified_login(self, session: CustomerSession) -> bool:
+        """True only for a session that a verified OIDC login of this same customer created.
+
+        A DEV sign-in creates sessions too, and records no authentication event for them.
+        """
+        from app.services.oidc_login import session_was_authenticated  # avoids an import cycle
+
+        with self._uow_factory() as uow:
+            return session_was_authenticated(uow, session.session_id, session.customer_id)

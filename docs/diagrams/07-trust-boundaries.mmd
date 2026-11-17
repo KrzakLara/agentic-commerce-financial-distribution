@@ -1,0 +1,46 @@
+flowchart TB
+  subgraph T0["T0: outside the bank"]
+    C["T0a Customer<br/>own browser"]
+    A["T0b Personal agent<br/>always untrusted"]
+  end
+
+  subgraph T1["T1: bank edge"]
+    CH["Customer channel<br/>OIDC session, CSRF"]
+    API["Agent API<br/>typed schemas, scopes"]
+    PUB["Public discovery<br/>signed card, metadata, facts"]
+  end
+
+  subgraph T2["T2: authoritative core"]
+    POL["Policy and state machine<br/>evidence and audit<br/>human review on a trusted console"]
+  end
+
+  subgraph T3["T3: contracted providers"]
+    IDP["Identity provider"]
+    KYC["Proofing and KYC"]
+    SIG["Signer, QTSP if required"]
+    DEP["Depot provider"]
+  end
+
+  C -->|"3 OIDC code flow with PKCE"| CH
+  A -->|"2 DPoP-bound scoped token"| API
+  A -->|"1 verifies signatures and expiry"| PUB
+  CH -->|"5 confirms the exact action digest"| POL
+  API -->|"4 scope and binding re-checked"| POL
+  CH -.->|"login"| IDP
+  POL -->|"6 accepts only a signed result<br/>bound to the case"| KYC
+  POL -->|"6 accepts only a signed result<br/>bound to the package"| SIG
+  POL -->|"7 versioned adapter"| DEP
+  DEP -->|"8 signed callback:<br/>the only path to OPENED"| POL
+
+  classDef untrusted fill:#003366,stroke:#003366,color:#FFFFFF
+  classDef edge fill:#FFFFFF,stroke:#003366,stroke-width:1px,color:#000000
+  classDef core fill:#E8E9EB,stroke:#003366,stroke-width:1px,color:#000000
+  classDef provider fill:#FFFFFF,stroke:#AE9966,stroke-width:1px,stroke-dasharray:6 4,color:#000000
+  class C,A untrusted
+  class PUB,API,CH edge
+  class POL core
+  class IDP,KYC,SIG,DEP provider
+  style T0 fill:#FFFFFF,stroke:#AE9966,stroke-dasharray:6 4
+  style T1 fill:#FFFFFF,stroke:#003366
+  style T2 fill:#F7F9FB,stroke:#003366,stroke-width:2px
+  style T3 fill:#FFFFFF,stroke:#AE9966

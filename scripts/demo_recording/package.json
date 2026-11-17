@@ -1,0 +1,13 @@
+{
+  "name": "trusteq-demo-recording",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser driver for the TRUSTEQ full-trust demo: plays the synthetic customer and records the fallback video.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "playwright": "1.64.1"
+  }
+}

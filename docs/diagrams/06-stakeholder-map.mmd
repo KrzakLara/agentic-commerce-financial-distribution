@@ -1,0 +1,41 @@
+flowchart TB
+  AO["Agent operator<br/>technology provider"]
+  AG["Personal AI agent<br/>independent, untrusted"]
+  CU["Customer<br/>retail investor, legal decision-maker"]
+  PB["Cooperative partner banks<br/>Volksbanken Raiffeisenbanken<br/>advice and distribution"]
+
+  subgraph GROUP["Union Investment group"]
+    USB["Depot bank<br/>Union Investment Service Bank AG<br/>contract partner, custody, orders"]
+    KVG["Fund management companies<br/>KVGs: funds, prices, KIDs"]
+  end
+
+  subgraph OTHER["Other parties"]
+    IDV["Identification provider<br/>online ID or video"]
+    QT["QTSP<br/>only where a form needs a QES"]
+    BZ["Federal Central Tax Office<br/>BZSt"]
+    TA["Trust authority<br/>provider identity, 2030"]
+  end
+
+  AO -.->|"operates"| AG
+  CU -.->|"uses, on the operator's terms"| AG
+  CU -->|"depot contract"| USB
+  CU -->|"advice, framework agreement"| PB
+  AG -.->|"reads facts, proposes, hands over"| USB
+  AG -.-|"channel conflict"| PB
+  PB -->|"forwards applications"| USB
+  USB -->|"non-monetary inducements"| PB
+  USB -->|"orders on commission"| KVG
+  KVG -.->|"monetary distribution remuneration"| PB
+  USB -->|"church-tax query"| BZ
+  USB -.->|"identification contract"| IDV
+  USB -.->|"only if required"| QT
+  TA -.->|"vouches for the metadata"| USB
+
+  classDef person fill:#003366,stroke:#003366,color:#FFFFFF
+  classDef bank fill:#E8E9EB,stroke:#003366,stroke-width:1px,color:#000000
+  classDef other fill:#FFFFFF,stroke:#AE9966,stroke-width:1px,color:#000000
+  class CU,AG person
+  class USB,KVG,PB bank
+  class AO,IDV,QT,TA,BZ other
+  style GROUP fill:#F7F9FB,stroke:#003366,stroke-width:2px
+  style OTHER fill:#FFFFFF,stroke:#DDE4EA

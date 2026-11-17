@@ -66,7 +66,7 @@ No state or transition was added. The information is a subflow bound to the live
 
 Run it: `.\.venv\Scripts\python.exe -m scripts.demo_integrated`, with `--profile novice` or `--profile incomplete` for the
 other results and `--depot-scenario NAME` for a failing provider. Instructions:
-[presentation/phase-07-demo-runbook.md](presentation/phase-07-demo-runbook.md).
+[TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md#3-offline-demos).
 
 ### The switch for the old scenarios
 

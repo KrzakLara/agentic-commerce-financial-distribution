@@ -36,8 +36,8 @@ The labels have fixed meanings:
 | 4 | | FAPI 2.0 authorization server | CONCEPT ONLY: integration path described |
 | 5 | Contract and signing | Immutable package, authorization, signed callbacks, test signer | LOCAL VERIFIED |
 | 5 | | Qualified electronic signature through a QTSP | ADAPTER READY: no QTSP, no sandbox credentials |
-| 6 | Trustworthy communication | Deterministic checks at the LLM output, structured answers | LOCAL VERIFIED, with a fake model |
-| 6 | | The same with a real model | NOT RUN: no paid call was authorized |
+| 6 | Trustworthy communication | One enforced boundary: a model proposes structured claims, the bank verifies them against versioned facts and renders the answer | LOCAL VERIFIED, with the offline rules and fake model clients |
+| 6 | | The same with the real Anthropic adapter | ADAPTER READY: implemented, not live-validated. No paid call was authorized |
 | 7 | Brand presence | Signed, agent-readable profile, sources, escalation | LOCAL VERIFIED |
 | 7 | | Verified domain, real brand | BLOCKED: synthetic institution, `.example` domain |
 | 8 | Channel governance | Claims, rules, conflicts, review, sample commission | LOCAL VERIFIED, synthetic contracts |
@@ -147,7 +147,7 @@ sequenceDiagram
 ```
 
 Run it: `.\.venv\Scripts\python.exe -m scripts.demo_trust_journey`. Details:
-[the demo runbook](presentation/phase-07-demo-runbook.md#13-the-full-trust-journey).
+[the demo guide](presentation/demo/README.md).
 
 ## 4. Who is responsible for what
 
@@ -170,14 +170,39 @@ The earlier scenarios behave as before: `TRUSTEQ_FULL_TRUST_PROFILE` is off by d
 With the profile on, and no change to the state machine:
 
 - The customer signs in with OIDC. The DEV sign-in is off. Without a complete provider configuration, customer
-  pages fail closed, as they did.
+  pages fail closed, as they did. The settings refuse the profile with `customer_identity_mode=dev_simulated`, so
+  the application does not start that way, and only a session that a verified OIDC login created counts as a
+  customer on any route (both since 2026-11-07).
 - The confirmation also needs a verified identity-proofing result.
 - The confirmation records an attribution decision and a policy decision.
 - The agent's submission also needs a signed package with a valid hash, and no unmet mandatory policy gate.
 - A failed proofing or signature parks the application in `MANUAL_REVIEW`, using two new review reasons.
 - Delegated tokens need DPoP proofs. Every other token stays a plain bearer token.
 
-Schema version 6 adds tables only.
+Schema version 6 adds tables, and rebuilds `review_cases`: its CHECK list gains the two review reasons above, and
+SQLite cannot change a CHECK in place. Until 2026-11-07 the upgrade added the tables only, so a database upgraded from
+version 5 kept the old list, and a failed identification or signature there ended in HTTP 500 without its review
+case. The upgrade now runs as one transaction: a failure rolls all of it back.
+
+**Added in the communication and onboarding phase** (2026-11-07, no new schema version). Details and evidence:
+[communication-onboarding-evaluation.md](communication-onboarding-evaluation.md).
+
+- Questions go through one boundary ([regulated-communication.md](regulated-communication.md)). The agent asks with
+  the A2A skill `product-question`, and the answer is audited with the application.
+- The full-trust profile can no longer run without the customer's information step. The settings refuse the
+  combination, and the workflow keeps the gates regardless.
+- The contract package also binds the price list, and the submission checks that the package names this application,
+  customer, product, channel and confirmed action.
+- A contract that no longer holds, because the terms changed or the package was altered, goes to a person, who can only
+  reject. It used to stay refused without a review case.
+- An agent's request for advice, portfolio management or orders is refused and audited. It used to be ignored, and an
+  account application was created.
+- Each policy decision records which services apply and how: [regulatory-policy-matrix.md](regulatory-policy-matrix.md).
+- The audit events of the submission and of the opening carry the delegation, identity status, consent, policy version,
+  product version, source documents and contract hash. The confirmation records how the customer authenticated.
+- A product's `valid_until`, a field of each product entry in the signed manifest, was dropped when the catalog loaded,
+  so a withdrawn product could not be expressed. It is now read, and the existing `product_is_current` check enforces
+  it. The manifest's own validity window, `issued_at` and `expires_at`, was already enforced and is unchanged.
 
 **Existing tests changed additively in two places:** the schema-version pin in three migration tests, from 5 to 6, and the
 table list in `tests/test_database.py`. No assertion was weakened.
@@ -187,7 +212,8 @@ table list in `tests/test_database.py`. No assertion was weakened.
 - **Mock:** KYC, compliance, contract record, depot provider.
 - **Synthetic:** the institution, the authority, all keys and users, the sample contracts.
 - **F-1 remains for the DEV fallback:** while `customer_identity_mode=dev_simulated`, anyone with the handoff values can
-  use the DEV sign-in. In the OIDC profile the DEV sign-in is off. See [identity-and-delegation.md](identity-and-delegation.md).
+  use the DEV sign-in. In the OIDC profile the DEV sign-in is off, and the full-trust profile cannot be combined with the
+  DEV mode at all. See [identity-and-delegation.md](identity-and-delegation.md).
 - **F-2 to F-7 stay open.** The new unauthenticated endpoints widen F-4: login states, refused delegation requests and
   refused callbacks write rows, and there are no rate limits. Public A2A reading stores nothing, on purpose.
 - **Not done:** external penetration test, load test, SAST, DAST, dependency scan, conformance suites.

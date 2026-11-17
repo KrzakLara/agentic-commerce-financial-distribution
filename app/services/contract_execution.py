@@ -32,18 +32,22 @@ from app.core.exceptions import (
     NotFoundError,
     ProviderUnavailableError,
     ServiceDisabledError,
+    UnverifiedReferenceError,
 )
 from app.domain.application import DepotApplication
 from app.domain.enums import ApplicationStatus as S
 from app.domain.enums import AuditActorType, AuditOutcome, ReviewCaseReason
+from app.domain.handoff import ApprovedAction
 from app.domain.review import ManualReviewCase
 from app.domain.workflow import TransitionAuthority
 from app.integrations.jose_tools import canonical_json, sha256_hex
+from app.integrations.ports import ProviderDiscoveryPort
 from app.integrations.remote_providers import ProviderCallFailed, SignatureProviderPort
 from app.integrations.signed_events import EventRejected, consume_jti, pinned_jwks, verify_event
 from app.repositories.interfaces import UnitOfWork
 from app.repositories.trust_orm import ContractPackageRow, SignatureSessionRow
 from app.services.application_service import ApplicationService
+from app.services.catalog_policy import resolve_offer
 
 EVENT_TYPE = "signature-event+jwt"
 STATE_PENDING = "PENDING_CUSTOMER"
@@ -93,6 +97,25 @@ def package_of(uow: UnitOfWork, application_id: str) -> ContractPackageRow | Non
     )
 
 
+def _package_matches_application(
+    uow: UnitOfWork, application: DepotApplication, package: ContractPackageRow
+) -> bool:
+    """The package names this application, this customer and the action the customer confirmed."""
+    document = json.loads(package.canonical_json)
+    consent = uow.receipts.get_consent(application.application_id)
+    handoff = uow.handoffs.get(consent.handoff_id) if consent else None
+    return (
+        handoff is not None
+        and package.customer_ref == application.customer_ref
+        and document.get("application_id") == application.application_id
+        and document.get("customer_ref") == application.customer_ref
+        and document.get("provider_id") == application.provider_id
+        and document.get("product_id") == application.product_id
+        and document.get("channel_id") == application.channel_id
+        and document.get("approved_action_digest") == handoff.action_digest
+    )
+
+
 def signature_gate(uow: UnitOfWork, application: DepotApplication) -> tuple[str, ...]:
     """What is missing before this application may be handed to the depot provider."""
     package = package_of(uow, application.application_id)
@@ -100,6 +123,8 @@ def signature_gate(uow: UnitOfWork, application: DepotApplication) -> tuple[str,
         return ("contract_package",)
     if sha256_hex(package.canonical_json.encode("utf-8")) != package.package_hash:
         return ("contract_package_integrity",)
+    if not _package_matches_application(uow, application, package):
+        return ("contract_package_binding",)
     session = latest_session(uow, application.application_id)
     if session is None or session.state != STATE_SIGNED:
         return ("contract_signature",)
@@ -108,6 +133,60 @@ def signature_gate(uow: UnitOfWork, application: DepotApplication) -> tuple[str,
     if session.signer_ref != application.customer_ref:
         return ("contract_signatory",)
     return ()
+
+
+def open_contract_review(
+    uow: UnitOfWork,
+    applications: ApplicationService,
+    application: DepotApplication,
+    *,
+    problems: list[str],
+    case_id: str,
+    now: datetime,
+    cid: str,
+) -> None:
+    """A contract that no longer holds goes to a person. Trying again could never fix it.
+
+    A person can only reject here (`CHECK_FAILED` without an attempt), and the customer starts a new
+    application. Inside the caller's transaction; the caller commits.
+    """
+    if application.status is not S.CONTRACT_PENDING:
+        return
+    if uow.review_cases.get_active_for_application(application.application_id) is not None:
+        return
+    case = ManualReviewCase(
+        case_id=case_id,
+        application_id=application.application_id,
+        reason=ReviewCaseReason.CHECK_FAILED,
+        interrupted_step=application.status,
+        opened_by=AuditActorType.SYSTEM,
+        created_at=now,
+    )
+    uow.review_cases.add(case)
+    applications.apply_transition(
+        uow,
+        application,
+        S.MANUAL_REVIEW,
+        authority=TransitionAuthority.SYSTEM_POLICY,
+        reason_code="contract_no_longer_valid",
+        correlation_id=cid,
+    )
+    uow.audit.append(
+        applications.new_event(
+            event_type="review.case_opened",
+            correlation_id=cid,
+            actor_type=AuditActorType.SYSTEM,
+            actor_id=None,
+            outcome=AuditOutcome.SUCCESS,
+            application_id=application.application_id,
+            details={
+                "case_id": case.case_id,
+                "reason": case.reason.value,
+                "contract_problems": problems,
+                "interrupted_step": S.CONTRACT_PENDING.value,
+            },
+        )
+    )
 
 
 class ContractExecutionService:
@@ -124,6 +203,7 @@ class ContractExecutionService:
         ttl_seconds: int = 900,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         id_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
+        catalog: ProviderDiscoveryPort | None = None,
     ) -> None:
         self._uow_factory = uow_factory
         self._apps = applications
@@ -135,6 +215,43 @@ class ContractExecutionService:
         self._ttl = timedelta(seconds=ttl_seconds)
         self._clock = clock
         self._id_factory = id_factory
+        self._catalog = catalog
+
+    def _approved_documents(self, action: ApprovedAction) -> list[dict[str, str]] | None:
+        """Every document of the approved terms, or None if the catalog no longer offers them.
+
+        Binds the price list into the package too, not only the disclosure. Terms that changed after
+        the customer's confirmation would make this package something the customer never approved.
+        """
+        documents = [
+            {
+                "document_id": action.document_id,
+                "document_version": action.document_version,
+                "document_digest": action.document_digest,
+            }
+        ]
+        if self._catalog is None:
+            return documents
+        try:
+            offer = resolve_offer(
+                self._catalog,
+                provider_id=action.provider_id,
+                product_id=action.product_id,
+                channel_id=action.channel_id,
+                now=self._clock(),
+            )
+        except UnverifiedReferenceError:
+            return None
+        if offer.product.terms_digest != action.terms_digest:
+            return None
+        return documents + [
+            {
+                "document_id": source.document_id,
+                "document_version": source.document_version,
+                "document_digest": source.document_digest,
+            }
+            for source in offer.product.sources
+        ]
 
     # --- the package ------------------------------------------------------------------------------
 
@@ -169,9 +286,23 @@ class ContractExecutionService:
             if handoff is None:
                 raise ConflictError()
             action = handoff.action
+            documents = self._approved_documents(action)
+            if documents is None:
+                open_contract_review(
+                    uow,
+                    self._apps,
+                    application,
+                    problems=["approved_action_current"],
+                    case_id=f"rvw-{self._id_factory()}",
+                    now=now,
+                    cid=cid,
+                )
+                uow.commit()
+                raise ContractHashMismatchError()
             document: dict[str, Any] = {
                 "package_type": "SYNTHETIC_DEPOT_CONTRACT_PACKAGE",
                 "legal_effect": False,
+                "service_context": "ACCOUNT_OPENING",
                 "application_id": application_id,
                 "customer_ref": application.customer_ref,
                 "provider_id": action.provider_id,
@@ -180,13 +311,7 @@ class ContractExecutionService:
                 "channel_id": action.channel_id,
                 "partner_id": action.partner_id,
                 "terms_digest": action.terms_digest,
-                "documents": [
-                    {
-                        "document_id": action.document_id,
-                        "document_version": action.document_version,
-                        "document_digest": action.document_digest,
-                    }
-                ],
+                "documents": documents,
                 "approved_action_digest": handoff.action_digest,
                 "attribution_decision": attribution,
                 "policy_decision": policy,

@@ -45,6 +45,11 @@ def test_a_fresh_correctly_signed_message_verifies() -> None:
         lambda cb: {"signature": cb.headers[SIGNATURE_HEADER].removeprefix("sha256=")},  # no prefix
         lambda cb: {"timestamp": None},
         lambda cb: {"timestamp": "not-a-number"},
+        lambda cb: {"timestamp": "²³"},  # digits to str.isdigit(), not to int()
+        lambda cb: {"signature": "sha256=" + "é" * 64},  # non-ASCII
+        lambda cb: {"timestamp": "١٢٣"},  # Arabic-Indic digits
+        lambda cb: {"timestamp": "9" * 400},  # too large for a float (finding F-5)
+        lambda cb: {"timestamp": "9" * 5000},  # beyond int()'s digit limit (finding F-5)
         lambda cb: {"timestamp": str(int(NOW) - 1)},  # signature was for another timestamp
         lambda cb: {"secret": b"another-secret"},
     ],
@@ -139,7 +144,17 @@ def test_a_valid_confirmation_opens_the_application_and_revokes_the_mandate(flow
 
 @pytest.mark.parametrize(
     "tamper",
-    ["body", "signature", "secret", "stale", "missing_headers"],
+    [
+        "body",
+        "signature",
+        "secret",
+        "stale",
+        "missing_headers",
+        "non_ascii_signature",
+        "non_ascii_digit_timestamp",
+        "overlong_timestamp",
+        "huge_timestamp",
+    ],
 )
 def test_unauthenticated_confirmations_are_rejected_and_change_nothing(
     flow: Flow, tamper: str
@@ -157,6 +172,14 @@ def test_unauthenticated_confirmations_are_rejected_and_change_nothing(
         flow.clock.advance(seconds=MAX_CLOCK_SKEW_SECONDS + 5)
     elif tamper == "missing_headers":
         headers = {"Content-Type": "application/json"}
+    elif tamper == "non_ascii_signature":  # was a server error before (finding F-5)
+        headers[SIGNATURE_HEADER] = ("sha256=" + "é" * 64).encode("latin-1")
+    elif tamper == "non_ascii_digit_timestamp":
+        headers[TIMESTAMP_HEADER] = "²³".encode("latin-1")
+    elif tamper == "overlong_timestamp":  # 400 digits: OverflowError, a server error (F-5)
+        headers[TIMESTAMP_HEADER] = "9" * 400
+    elif tamper == "huge_timestamp":  # 5,000 digits: ValueError, a server error (F-5)
+        headers[TIMESTAMP_HEADER] = "9" * 5000
     response = flow.provider_http.post(CALLBACK_PATH, content=body, headers=headers)
     assert response.status_code == 401
     assert flow.status_of(app_id) == "SUBMITTED_TO_DEPOT_PROVIDER"

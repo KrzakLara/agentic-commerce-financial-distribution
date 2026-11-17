@@ -170,7 +170,8 @@ class OnboardingService:
         customer_information_required: bool = False,
         trust: TrustGates | None = None,
     ) -> None:
-        self._information_required = customer_information_required
+        # With the full-trust gates on, this step cannot be switched off: the gates read its result.
+        self._information_required = customer_information_required or trust is not None
         self._trust = trust
         self._uow_factory = uow_factory
         self._apps = applications
@@ -625,6 +626,7 @@ class OnboardingService:
             "tax_external_verification": tax.external_verification if tax else "NOT_IMPLEMENTED",
             "appropriateness_outcome": assessment.outcome if assessment else "MISSING",
             "appropriateness_acknowledged": bool(assessment and assessment.acknowledged_at),
+            "appropriateness_rule_set": assessment.rule_set_version if assessment else None,
         }
 
     # --- 3. deterministic bank-side checks (MOCK providers) ----------------------------------
@@ -964,7 +966,7 @@ class OnboardingService:
                 )
             if not decision.allowed:
                 # The precise reason is audited; the agent only gets a generic refusal.
-                raise self._deny(
+                refusal = self._deny(
                     uow,
                     PrerequisitesNotMetError(),
                     event_type="application.submit_denied",
@@ -974,6 +976,12 @@ class OnboardingService:
                     correlation_id=correlation_id,
                     details={"missing": list(decision.missing)},
                 )
+                # A contract that no longer holds cannot be fixed by trying again: a person decides.
+                if self._trust is not None:
+                    self._trust.escalate_contract_problem(
+                        uow, application_id, decision.missing, correlation_id
+                    )
+                raise refusal
 
             submission = self._depot.submit_application(application)  # idempotent per application
             if not submission.accepted:
@@ -1117,6 +1125,7 @@ class OnboardingService:
                         "confirmation_id": confirmation.confirmation_id,
                         "provider_ref": confirmation.provider_ref,
                         "mock": True,
+                        **(self._trust.submit_evidence(uow, app_id) if self._trust else {}),
                     },
                 )
             )

@@ -53,6 +53,9 @@ dist/
 *.egg-info/
 .eggs/
 
+# --- Node.js (the demo browser driver in scripts/demo_recording) -----------
+node_modules/
+
 # --- Temporary files, logs, editors, OS ----------------------------------
 tmp/
 temp/

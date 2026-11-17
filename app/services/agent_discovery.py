@@ -138,6 +138,14 @@ def agent_card(settings: Settings, provider: Provider, key: ECKey) -> dict[str, 
                 ["product", "fees", "facts"],
             ),
             _skill(
+                "product-question",
+                "Question about the product or the process",
+                "Takes a question in words. The bank answers only from verified facts and fixed "
+                "texts, each fact with its source, or says that the evidence is insufficient or "
+                "that a person is needed. No model's text is ever released. Not investment advice.",
+                ["product", "question", "facts"],
+            ),
+            _skill(
                 "product-comparison",
                 "Approved fee comparison",
                 "Puts approved fee values side by side when the data supports it. Never ranks.",
@@ -337,7 +345,12 @@ def provider_profile(
             "agent_card": f"{base}/.well-known/agent-card.json",
             "a2a_protocol_version": A2A_PROTOCOL_VERSION,
             "authentication": {
-                "public_read": ["product-information", "product-comparison", "document-retrieval"],
+                "public_read": [
+                    "product-information",
+                    "product-question",
+                    "product-comparison",
+                    "document-retrieval",
+                ],
                 "delegation_required": ["depot-onboarding"],
                 "authorization_server_metadata": f"{base}/.well-known/oauth-authorization-server",
                 "delegation_requires": [
