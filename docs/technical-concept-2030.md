@@ -1,8 +1,8 @@
 # Technical concept for agent-based depot opening, target 2030
 
 An architecture deliverable, not an implemented system. It starts from the frozen
-`TRUSTEQ_ADR_v1.1_FINAL`, keeps its decisions and adds what the case study asks for on top: autonomy
-levels, channel conflicts, a staged roadmap with roles, and an explicit decision log.
+`TRUSTEQ_ADR_v1.1_FINAL`, keeps its decisions and adds on top: autonomy levels, channel conflicts, a
+staged roadmap with roles, and an explicit decision log.
 
 **How to read the labels.** `PROTOTYPE` means built and tested in this repository, with synthetic data.
 `PROPOSED FOR 2030` means a design, not built. **All timelines, team sizes and effort figures below are
@@ -14,16 +14,15 @@ The current state of the code is in [final-integration.md](final-integration.md)
 [agentic-commerce-integration.md](agentic-commerce-integration.md), with exact classifications. In the tables below, "2026
 prototype" means built and tested locally with synthetic parties. Nothing is live or connected to a real sandbox.
 
-**Case-study page 3, and where each part is:**
+**Where each part of the concept is:**
 
-| Part of the assignment | Document |
+| Topic | Document |
 |---|---|
-| Ist-Analyse: today's process, steps and evidence, regulation, frictions | [research/ist-analyse-union-investment.md](research/ist-analyse-union-investment.md) |
 | Regulatory ownership and automation boundaries | [regulatory-policy-matrix.md](regulatory-policy-matrix.md) |
-| Roles, RACI, trust boundaries, channel conflict | [research/roles-raci-trust-boundaries.md](research/roles-raci-trust-boundaries.md) |
+| Trust boundaries and channel conflict | [trust-boundaries.md](trust-boundaries.md), [channel-governance.md](channel-governance.md) |
 | Target architecture 2030, growing requirements | this document |
 | Diagrams, as editable Mermaid sources | [diagrams/](diagrams/README.md) |
-| The prototyped end-to-end scenario, traced to code and tests | [research/page3-e2e-traceability.md](research/page3-e2e-traceability.md) |
+| The prototyped end-to-end scenario | section 2.2 and [agentic-commerce-integration.md](agentic-commerce-integration.md) |
 | Assumptions and design decisions | section 8 and [decision-register.md](decision-register.md) |
 
 ## 1. The problem in one paragraph
@@ -37,9 +36,9 @@ never leave the bank's and the customer's hands?"**
 
 **Assumptions** (from the ADR): a fictional German fund distributor and a separate, appropriately licensed
 depot provider. "The fund provider" is not automatically the entity that opens the account. Which entity holds
-which duty depends on the actual licence, service model and contracts. The reference case shows exactly that split:
-the depot contract is with Union Investment Service Bank AG, the funds come from the group's management companies,
-and the cooperative banks advise and distribute ([research/ist-analyse-union-investment.md](research/ist-analyse-union-investment.md)).
+which duty depends on the actual licence, service model and contracts. A common German structure shows exactly that split:
+the depot contract is with a separately licensed depot bank, the funds come from the group's management companies,
+and partner banks advise and distribute.
 
 ### From today to 2030
 
@@ -284,7 +283,7 @@ stand-in for a real party.
 | Authorization | Gates at the confirmation (identity, tax, knowledge and experience) and at the submission (signature, package binding, policy) |
 | Persistence | `identity_proofing_cases`, `tax_information`, `appropriateness_assessments`, consent and disclosure receipts, `contract_packages`, `signature_sessions`, `depot_submissions`, `review_cases`, `policy_decisions` |
 | Failure handling | A failed proofing or signature goes to `MANUAL_REVIEW`. Changed terms invalidate the contract, and a person can only reject it. A provider error never produces `OPENED` |
-| 2026 prototype | All mechanics implemented locally ([research/page3-e2e-traceability.md](research/page3-e2e-traceability.md)) |
+| 2026 prototype | All mechanics implemented locally ([agentic-commerce-integration.md](agentic-commerce-integration.md)) |
 | Synthetic or mock | Identity proofing, KYC, compliance, the signer and the depot provider |
 | 2030 integrations | Identification through a contracted provider (online ID, video identification where still permitted, later the EUDI Wallet), KYC and AML screening, the tax checks that apply, a QTSP where a QES is legally required, the custodian's API |
 | Ownership | The depot bank: its AML officer, compliance and operations |
@@ -326,9 +325,9 @@ stand-in for a real party.
 
 ### 2.2 The prototyped end-to-end sequence
 
-This is the scenario the prototype runs (case-study page 3: one concrete end-to-end scenario). Every synthetic party is
+This is the end-to-end scenario the prototype runs. Every synthetic party is
 labelled in the diagram. Source: [diagrams/03-full-trust-e2e-sequence.mmd](diagrams/03-full-trust-e2e-sequence.mmd);
-the trace to code and tests is in [research/page3-e2e-traceability.md](research/page3-e2e-traceability.md).
+the implementation status of each part is in [agentic-commerce-integration.md](agentic-commerce-integration.md).
 
 <!-- diagram: diagrams/03-full-trust-e2e-sequence.mmd -->
 ```mermaid
@@ -632,7 +631,6 @@ scorecards for the seven decision questions asked most often.
 
 Open questions a client project must answer first: which legal entity holds each duty, what the depot provider's
 integration really looks like, which identity route the bank accepts, whether agents will be allowed to hold mandates at
-all, and how partners want to be treated. The open items in
-[research/ist-analyse-union-investment.md](research/ist-analyse-union-investment.md#9-needs-verification---checklist-for-independent-checking)
-still need independent verification, and every row marked LEGAL VALIDATION REQUIRED in
+all, and how partners want to be treated. Facts about today's process taken from public documents still need
+independent verification, and every row marked LEGAL VALIDATION REQUIRED in
 [regulatory-policy-matrix.md](regulatory-policy-matrix.md) needs a lawyer before production.

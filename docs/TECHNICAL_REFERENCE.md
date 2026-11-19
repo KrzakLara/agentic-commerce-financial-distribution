@@ -407,6 +407,3 @@ stage, and where they disagree with the code or with later evaluation reports, t
 | Final integration of tax, assessment, provider adapter and claims | [final-integration.md](final-integration.md) |
 | Communication and onboarding evaluation | [communication-onboarding-evaluation.md](communication-onboarding-evaluation.md) |
 | Verified discovery, disclosures and human review (with the core freeze) | [phase-04-traceability.md](phase-04-traceability.md) |
-| Today's depot-opening process at a reference provider, from public sources | [research/ist-analyse-union-investment.md](research/ist-analyse-union-investment.md) |
-| Process evidence matrix, roles and trust boundaries | [research/process-evidence-matrix.md](research/process-evidence-matrix.md), [research/roles-raci-trust-boundaries.md](research/roles-raci-trust-boundaries.md) |
-| The prototyped end-to-end scenario, traced to code and tests | [research/page3-e2e-traceability.md](research/page3-e2e-traceability.md) |

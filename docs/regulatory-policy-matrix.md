@@ -63,16 +63,17 @@ acknowledgement, and the customer decides.
 
 ## Ownership and automation boundaries
 
-Case-study page 3 asks which actor carries each regulatory requirement and what may be automated. The two tables below
-answer that for each requirement, R01 to R18.
+Which actor carries each regulatory requirement, and what may be automated? The two tables below answer that for each
+requirement, R01 to R18.
 
 **Text read** means the provision was read at its official source on the date in the source list. Whether it applies to a
 given provider, service or step is a separate question. Where no official source settles that, the row says
 **LEGAL VALIDATION REQUIRED**.
 
-**The reference case.** The accountable party is named for the case in the Ist-Analyse
-([research/ist-analyse-union-investment.md](research/ist-analyse-union-investment.md)):
-- the depot contract is with Union Investment Service Bank AG, called "the depot bank" below;
+**The reference case.** The accountable party is assigned for a reference structure taken from a public-source
+research note on one German fund provider group (cited below as "Ist-Analyse S#"; the note itself is not part of this
+repository):
+- the depot contract is with a separately licensed depot bank, called "the depot bank" below;
 - the funds come from the group's management companies (KVGs);
 - cooperative partner banks advise and distribute.
 
@@ -131,7 +132,7 @@ were read, and the change is scenario 1 in [technical-concept-2030.md](technical
 
 ### The boundaries in short
 
-These are the boundaries the case study asks about. Each one names the rows above that support it.
+These are the central automation boundaries. Each one names the rows above that support it.
 
 - **Appropriateness at account opening.** WpHG §63(10) attaches the assessment to non-advised investment services, not to
   the opening of an account (R08). The prototype collects the answers and records them for later orders, but no answer

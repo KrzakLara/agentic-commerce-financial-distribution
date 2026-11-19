@@ -14,7 +14,7 @@ journey as a whole; one journey may mix levels step by step. They match the tabl
 In the reference case the depot opening is **L0**:
 - human-led, on paper or in online banking, with a handwritten signature or a TAN release;
 - no machine-readable or verifiable entry point for an agent was found;
-- Union Investment's product pages served the homepage to automated requests (Ist-Analyse, B13).
+- the reference provider's product pages served the homepage to automated requests.
 
 General-purpose AI assistants can already research providers on public pages, which is L1 without verification.
 **This is an assessment from one provider group's public documents, not a market survey.**

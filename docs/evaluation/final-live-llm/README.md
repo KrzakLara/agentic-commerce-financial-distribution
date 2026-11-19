@@ -255,7 +255,6 @@ is not evidence for the Phase 05 agent.
   - [../../communication-onboarding-evaluation.md](../../communication-onboarding-evaluation.md);
   - [../../agentic-commerce-integration.md](../../agentic-commerce-integration.md);
   - [../../technical-concept-2030.md](../../technical-concept-2030.md);
-  - [../../research/page3-e2e-traceability.md](../../research/page3-e2e-traceability.md);
   - the dated phase and acceptance reports.
 
 - **Not production-ready.** Nothing here is production-regulated, a compliance statement or legal advice.

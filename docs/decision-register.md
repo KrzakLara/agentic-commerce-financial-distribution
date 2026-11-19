@@ -356,7 +356,7 @@ demonstrates.
 | Cost and operations | More adapters |
 | Trust and interoperability | One adapter and one trust relation per role |
 | Trade-off | More adapters, contracts and keys to manage |
-| Evidence | [research/ist-analyse-union-investment.md](research/ist-analyse-union-investment.md) section 2 |
+| Evidence | Public contract documents of a reference provider group, summarized in [regulatory-policy-matrix.md](regulatory-policy-matrix.md#ownership-and-automation-boundaries) |
 | Reversibility | High |
 | Revisit if | A specific client's legal structure justifies a simpler model |
 | Status | Implemented as separate ports with synthetic parties. Where the matrix says so, the legal attribution of a duty is legal validation required |

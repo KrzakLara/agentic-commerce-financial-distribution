@@ -4,6 +4,9 @@
 
 **Trust-first AI architecture for secure, human-authorized financial onboarding.**
 
+**1,488 automated tests** · **4 end-to-end demo scenarios** · **2 agent execution modes** · **0 workflow transitions the agent can take**
+
+[![CI](https://github.com/KrzakLara/agentic-commerce-financial-distribution/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/KrzakLara/agentic-commerce-financial-distribution/actions/workflows/ci.yml)
 ![Python 3.11 | 3.12](https://img.shields.io/badge/Python-3.11_%7C_3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
 ![Pydantic v2](https://img.shields.io/badge/Pydantic-v2-E92063?logo=pydantic&logoColor=white)
@@ -339,8 +342,8 @@ into one success rate.
 
 | Check | Result | Provenance |
 |---|---|---|
-| Full suite, `python -m pytest` | **1,488 passed**, 0 failed | 2026-11-18, on this repository's published tree, Windows 10, Python 3.12.7, 287 s. The same application code also passed 1,488 of 1,488 on 2026-11-08 and 2026-11-17 |
-| Ruff lint and format | Clean | 2026-11-18, same tree |
+| Full suite, `python -m pytest` | **1,488 passed**, 0 failed | 2026-11-19, on this tree in fresh environments: Windows 10 with Python 3.12.7, and Linux containers with Python 3.12.16 and 3.11.18. The same application code also passed 1,488 of 1,488 on 2026-11-08, 2026-11-17 and 2026-11-18. Every push and pull request to `main` now runs the suite in [GitHub Actions](.github/workflows/ci.yml) on Ubuntu (3.11, 3.12) and Windows (3.12) |
+| Ruff lint and format | Clean | 2026-11-19, same tree, on Windows and Linux; also checked in CI |
 
 The suite runs offline against in-memory or temporary SQLite databases and real HTTP-level clients. Model calls are
 replaced by fake clients; no test calls a paid API.
@@ -524,12 +527,14 @@ Further reading: [decision register](docs/decision-register.md) · [technical co
 
 ## Engineering ownership
 
-This project was researched, architecturally directed and organized into development phases by the author, and built
-with AI-assisted engineering tools, including Claude Code. Not every line was written by hand.
-
-The author's contribution lies in the problem framing, the architecture and its trust boundaries, the phase plan, and
-the documented engineering decisions: 26 entries, each with alternatives, trade-offs and the evidence in code. The
-claims in this README were checked against the source code, the tests and the stored evaluation reports.
-
-Claude Code was a development tool. The AI component that runs **inside** the application is the optional Claude agent
-described in [AI integration](#ai-integration).
+This is an independently directed AI engineering portfolio project. I framed the problem, designed the architecture
+and its five trust zones, decomposed the system into a bank-controlled core, an independent agent process and
+simulated regulated services, and planned the build in staged phases, recording 26 decisions with their alternatives
+and trade-offs in the [decision register](docs/decision-register.md). The implementation was developed with
+AI assistance in Claude Code, working to my specifications, so not every line was written by hand; the security
+trade-offs it had to respect were set as explicit constraints, such as deterministic policy instead of model judgement,
+no agent authority on any workflow transition, and a signed provider callback as the only path to `OPENED`. Behaviour
+is established by reproducible evidence rather than assertion: an offline test suite that runs in
+[CI](.github/workflows/ci.yml), negative security cases, hand-picked mutation tests and a pre-registered live model
+evaluation, each documented with its date and scope. Claude Code was a development tool; the AI component inside the
+application is the optional Claude agent described in [AI integration](#ai-integration).
